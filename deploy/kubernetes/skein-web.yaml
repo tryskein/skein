@@ -1,0 +1,149 @@
+# skein-web: browser sessions, sign-in, the SignalR hub (/hub), and the reverse
+# proxy to skein-api for /api, /mcp, /agent/v1 and the OAuth metadata. The
+# Ingress sends those paths here directly (ingress.yaml).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: skein-web
+  labels:
+    app.kubernetes.io/name: skein-web
+    app.kubernetes.io/part-of: skein
+spec:
+  # One replica by default, on purpose. SignalR negotiates on one request and
+  # upgrades to a WebSocket on the next; the connection exists only in the
+  # memory of the pod that answered the negotiation. Measured on a two-replica
+  # set without affinity: 8 of 12 WebSocket upgrades after a negotiate got a
+  # 404 from the other pod, which breaks the live feed.
+  # More than one replica works only with session affinity for /hub on the
+  # Ingress: the second Ingress in ingress.yaml sets it for ingress-nginx; other
+  # controllers need their own equivalent. Raise this number only with that in
+  # place. With one replica expect a short gap in the live feed on every
+  # rollout; the browser reconnects by itself.
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: skein-web
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: skein-web
+        app.kubernetes.io/part-of: skein
+    spec:
+      # SHUTDOWN WINDOW. skein-web is an ASP.NET Core host: on SIGTERM it stops
+      # accepting and waits for in-flight requests for the host shutdown timeout,
+      # 30 s by default (HostOptions.ShutdownTimeout; this set does not change
+      # it). Sequence:
+      #     preStop sleep                                   10 s
+      #   + host shutdown timeout                           30 s
+      #   = 40 s, plus a margin of 20 s                  -> 60 s.
+      # Requests and streams still open when the timeout ends are aborted, so the
+      # window is not a promise that long MCP or SignalR streams survive a
+      # rollout: clients reconnect. A window shorter than 40 s makes the kubelet
+      # kill the process before its own drain ends.
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: skein-web
+      containers:
+        - name: skein-web
+          image: ghcr.io/tryskein/skein-web:skein-X.Y.Z
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: skein-web-config
+          env:
+            - name: SKEIN_INTERNAL_SECRET
+              valueFrom:
+                secretKeyRef: {name: skein-secrets, key: SKEIN_INTERNAL_SECRET}
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef: {name: skein-secrets, key: REDIS_URL}
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: "2"
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "10"]
+          # At start skein-web waits for skein-api (SKEIN_API_STARTUP_TIMEOUT_SECONDS,
+          # 120 s here) before it opens its port. 30 x 5 s = 150 s covers it.
+          startupProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 30
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          # Readiness checks Redis only (the database is behind skein-api).
+          readinessProbe:
+            httpGet: {path: /ready, port: http}
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  # The name is fixed: the nginx of skein-frontend proxies to the literal
+  # host `skein-web:8080`, so the Service must be called skein-web, in the same
+  # namespace as skein-frontend, and listen on 8080.
+  name: skein-web
+  labels:
+    app.kubernetes.io/name: skein-web
+    app.kubernetes.io/part-of: skein
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: skein-web
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: skein-web
+  labels:
+    app.kubernetes.io/name: skein-web
+    app.kubernetes.io/part-of: skein
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: skein-web

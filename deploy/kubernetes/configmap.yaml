@@ -1,0 +1,84 @@
+# Non-secret settings of skein-api and skein-web.
+#
+# Every variable is described in the environment reference of its service; this
+# file does not repeat those descriptions, it only sets what a Kubernetes
+# installation has to set:
+#   skein-api      https://github.com/tryskein/skein-api/blob/main/docs/env-reference.md
+#   skein-web      https://github.com/tryskein/skein-web/blob/main/docs/env-reference.md
+#   skein-frontend https://github.com/tryskein/skein-frontend/blob/main/docs/env-reference.md
+#                  (the image reads no environment variables)
+#
+# Values written <like-this> or on example.com are placeholders: replace them.
+# A variable that is not listed here keeps the default of its reference. Never
+# set a variable to an empty string to mean "off" - leave the line out.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: skein-api-config
+  labels:
+    app.kubernetes.io/name: skein-api
+    app.kubernetes.io/part-of: skein
+data:
+  PORT: "5100"
+  LOG_LEVEL: "info"
+
+  # Pool size PER POD. replicas x DATABASE_MAX_CONNS, plus one extra pod during
+  # a rolling update (maxSurge: 1), must stay below max_connections of your
+  # PostgreSQL. 2 replicas + 1 surge = 3 x 20 = 60.
+  DATABASE_MAX_CONNS: "20"
+
+  # NATS Core address (no JetStream is used). The default points at the example
+  # in optional-dependencies/; use your own NATS here.
+  NATS_URL: "nats://skein-nats:4222"
+
+  # The public address of the installation. Required by skein-api; it must
+  # be https while ENVIRONMENT is production (the default).
+  SKEIN_AGENT_PUBLIC_URL: "https://skein.example.com"
+  SKEIN_APP_BASE_URL: "https://skein.example.com"
+
+  # Sign-in: local passwords. For single sign-on see the "Authentication mode
+  # and SSO" section of the skein-api reference and the Authentication__Oidc__*
+  # settings of skein-web.
+  SKEIN_AUTH_MODE: "local"
+
+  # Attachments - an EXTERNAL S3-compatible service, see the runbook (INSTALL.md,
+  # Target B). S3_URL is the address the pods use; S3_PUBLIC_URL is the address
+  # the BROWSER uses for presigned links, so it must resolve publicly and be
+  # https. The keys are in the Secret. S3_CORS_ALLOWED_ORIGINS is the browser
+  # origin skein-api writes into the bucket's CORS rule at every start: the
+  # address the UI is served from (the same as SKEIN_AGENT_PUBLIC_URL).
+  # skein-api has no default for it; when unset, it leaves the bucket CORS
+  # untouched. Remove this line only if you manage the bucket's CORS rule yourself.
+  S3_URL: "https://s3.example.com"
+  S3_PUBLIC_URL: "https://s3.example.com"
+  S3_BUCKET: "skein-attachments"
+  S3_CORS_ALLOWED_ORIGINS: "https://skein.example.com"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: skein-web-config
+  labels:
+    app.kubernetes.io/name: skein-web
+    app.kubernetes.io/part-of: skein
+data:
+  PORT: "8080"
+
+  # Service names of this set; they are resolved inside the namespace.
+  SKEIN_API_URL: "http://skein-api:5100"
+  NATS_URL: "nats://skein-nats:4222"
+
+  # skein-web waits this long for skein-api to answer at start and exits if it
+  # does not. On the first start skein-api applies all database migrations
+  # before it opens its port, so give it room. Must stay below the failure
+  # window of the startupProbe in skein-web.yaml (150 s).
+  SKEIN_API_STARTUP_TIMEOUT_SECONDS: "120"
+
+  # The peers whose X-Forwarded-For / -Proto / -Host skein-web trusts. Here the
+  # peer is the ingress controller's pod, so this is the pod network of your
+  # cluster (the example is a common default; read yours from the cluster).
+  # Leaving it empty is fail-closed and switches off every per-IP limit. Pair this with a
+  # NetworkPolicy that lets only the ingress controller reach skein-web: any
+  # pod inside the trusted range can otherwise forge these headers. Details and
+  # a known limit: INSTALL.md, Target B.
+  SKEIN_TRUSTED_PROXIES: "10.244.0.0/16"

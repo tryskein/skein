@@ -1,0 +1,78 @@
+# EXAMPLE NATS for trying Skein out.
+#
+# NOT FOR PRODUCTION as is: one instance, no authentication, no TLS. What
+# Skein needs is small: NATS Core only (no JetStream, so no volume), carrying
+# change notifications from skein-api to the live feed of skein-web; durability
+# is in PostgreSQL, and a missed message costs a delayed screen update, not
+# data. A single node is therefore a legitimate production topology; what this
+# file lacks is access control. Restrict who can reach port 4222 with a
+# NetworkPolicy or add NATS authentication.
+apiVersion: v1
+kind: Service
+metadata:
+  name: skein-nats
+  labels:
+    app.kubernetes.io/name: skein-nats
+    app.kubernetes.io/part-of: skein
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: skein-nats
+  ports:
+    - name: client
+      port: 4222
+      targetPort: client
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: skein-nats
+  labels:
+    app.kubernetes.io/name: skein-nats
+    app.kubernetes.io/part-of: skein
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: skein-nats
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: skein-nats
+        app.kubernetes.io/part-of: skein
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: nats
+          # The image of docker-compose.production.yml, by digest.
+          image: nats:2.12-alpine@sha256:b270f5e2428354c0335612694d7dd2fb588148e567a5757fdff325ef9c9332e6
+          # -m: the monitoring endpoint the probes read; not exposed by a Service.
+          args: ["-m", "8222"]
+          ports:
+            - name: client
+              containerPort: 4222
+            - name: monitor
+              containerPort: 8222
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          readinessProbe:
+            httpGet: {path: /healthz, port: monitor}
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: {path: /healthz, port: monitor}
+            periodSeconds: 10
+            failureThreshold: 6

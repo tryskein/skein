@@ -1,0 +1,115 @@
+name: CI
+
+# Cheap static checks of this repository: compose files, shell scripts,
+# Kubernetes manifests, the S3 contract checker. No end-to-end or integration
+# runs here; those are run by hand with scripts/e2e-test.sh and
+# scripts/integration-test.sh (see DEVELOPMENT.md).
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  compose:
+    name: Compose files are valid
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      # `docker compose config -q` parses and interpolates a file without
+      # starting anything. The variables below are the ones each file marks as
+      # required; the values are placeholders.
+      - name: Validate every docker-compose*.yml
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Fail if a new compose file appears that this step does not know:
+          # it would otherwise be skipped silently.
+          known="docker-compose.e2e.build.yml docker-compose.e2e.yml docker-compose.local.yml docker-compose.production.yml docker-compose.test.yml"
+          found=""
+          for f in docker-compose*.yml; do found="${found:+$found }$f"; done
+          if [ "$found" != "$known" ]; then
+            echo "::error::Compose files changed. Found: $found. Expected: $known. Add the new file to this step with the variables it requires."
+            exit 1
+          fi
+
+          docker compose -f docker-compose.local.yml config -q
+          docker compose -f docker-compose.e2e.build.yml config -q
+
+          SKEIN_E2E_NETWORK=ci E2E_API_IMAGE=ci/api E2E_WEB_IMAGE=ci/web E2E_FRONTEND_IMAGE=ci/frontend \
+            docker compose -f docker-compose.e2e.yml config -q
+
+          SKEIN_ITEST_NETWORK=ci docker compose -f docker-compose.test.yml config -q
+
+          # The production file has one optional S3 store per profile; check
+          # the default and each profile.
+          export POSTGRES_PASSWORD=ci-placeholder
+          export SKEIN_AGENT_PUBLIC_URL=https://skein.example.com
+          export SKEIN_INTERNAL_SECRET=ci-placeholder-not-a-secret-value
+          export SKEIN_VERSION=0.0.0
+          for profile in "" garage seaweedfs rustfs; do
+            echo "docker-compose.production.yml, profile '${profile:-none}'"
+            COMPOSE_PROFILES="$profile" docker compose -f docker-compose.production.yml config -q
+          done
+
+  shell:
+    name: Shell scripts
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      # Warnings and errors only: the scripts carry one style-level note
+      # (SC2016) that is deliberate.
+      - name: shellcheck
+        run: shellcheck --severity=warning scripts/*.sh
+
+  manifests:
+    name: Kubernetes manifests and S3 checker
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Render the kustomizations
+        run: |
+          set -euo pipefail
+          kubectl kustomize deploy/kubernetes > /dev/null
+          kubectl kustomize deploy/kubernetes/optional-dependencies > /dev/null
+
+      - name: Vet the S3 contract checker
+        working-directory: scripts/s3-contract-check
+        run: go vet ./...
+
+      # versions.env is written by the release workflow (RELEASING.md); make
+      # sure a hand edit did not break its format.
+      - name: Check versions.env format
+        run: |
+          set -euo pipefail
+          if [ ! -f versions.env ]; then
+            echo "versions.env does not exist yet (no Skein release made); nothing to check."
+            exit 0
+          fi
+          for key in SKEIN_VERSION SKEIN_API_VERSION SKEIN_WEB_VERSION SKEIN_FRONTEND_VERSION; do
+            if [ "$(grep -cE "^${key}=[0-9]+\.[0-9]+\.[0-9]+$" versions.env)" != 1 ]; then
+              echo "::error file=versions.env::${key} must appear exactly once as ${key}=X.Y.Z"
+              exit 1
+            fi
+          done
+          if [ "$(grep -cvE '^(#.*|[A-Z_]+=[0-9]+\.[0-9]+\.[0-9]+)$' versions.env)" != 0 ]; then
+            echo "::error file=versions.env::unexpected line"
+            exit 1
+          fi

@@ -1,0 +1,351 @@
+name: Release Skein
+
+# Cuts a Skein release: the set of the latest service versions that work
+# together. The rules (what counts as a change, how the version is computed,
+# what the image tags mean) are in RELEASING.md; keep the two in step.
+#
+# Start it by hand from the default branch:
+#   gh workflow run release.yml
+# A required-reviewers rule on the `release` environment gates the run.
+#
+# Order of work: everything that can be checked is checked first; the steps
+# that cannot be undone (image tags, then the git tag, then the GitHub
+# Release) come last and in that order.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump_override:
+        description: >-
+          "major" forces a major bump. Allowed only when no service changed
+          and this repository alone changed in a breaking way (for example the
+          format of .env).
+        type: choice
+        options:
+          - none
+          - major
+        default: none
+      first_version:
+        description: >-
+          Version of the very first Skein release (X.Y.Z). Used only when this
+          repository has no release tag yet; ignored otherwise.
+        type: string
+        required: false
+      dry_run:
+        description: >-
+          Do every check and show what would be released, but publish nothing
+          (no commit, no tags, no Release).
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-skein
+  cancel-in-progress: false
+
+env:
+  OWNER: tryskein
+  REGISTRY: ghcr.io/tryskein
+
+jobs:
+  release:
+    name: Release Skein
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: write   # push the release commit and tag, create the GitHub Release
+      packages: read    # read the service images; tagging uses GHCR_RELEASE_TOKEN
+    env:
+      GH_TOKEN: ${{ github.token }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      BUMP_OVERRIDE: ${{ inputs.bump_override }}
+      FIRST_VERSION: ${{ inputs.first_version }}
+      DRY_RUN: ${{ inputs.dry_run }}
+      GHCR_RELEASE_TOKEN: ${{ secrets.GHCR_RELEASE_TOKEN }}
+    steps:
+      - name: Check that the run is on the default branch
+        run: |
+          if [ "$GITHUB_REF_NAME" != "$DEFAULT_BRANCH" ]; then
+            echo "::error::Run this workflow from the default branch ($DEFAULT_BRANCH), not from $GITHUB_REF_NAME."
+            exit 1
+          fi
+
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0   # tags and history are needed to find the previous release
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Find the latest release of each service
+        run: |
+          set -euo pipefail
+          : > "$RUNNER_TEMP/state.env"
+          for pair in skein-api:API skein-web:WEB skein-frontend:FRONTEND; do
+            svc="${pair%%:*}"; key="${pair##*:}"
+            tag="$(gh api --paginate "repos/${OWNER}/${svc}/releases?per_page=100" \
+                     --jq '.[] | select((.draft | not) and (.prerelease | not)) | .tag_name' \
+                   | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1 || true)"
+            if [ -z "$tag" ]; then
+              echo "::error::${svc} has no published release with a tag of the form X.Y.Z."
+              exit 1
+            fi
+            echo "${svc}: latest release ${tag}"
+            echo "NEW_${key}=${tag}" >> "$RUNNER_TEMP/state.env"
+          done
+
+      - name: Compare with the previous Skein release and compute the version
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          . "$RUNNER_TEMP/state.env"
+
+          rank() { case "$1" in major) echo 3;; minor) echo 2;; patch) echo 1;; *) echo 0;; esac; }
+          # bump_of PREV NEW -> major|minor|patch (fails if NEW is lower than PREV)
+          bump_of() {
+            local p="$1" n="$2" pa na
+            [ "$p" != "$n" ] || { echo none; return; }
+            [ "$(printf '%s\n%s\n' "$p" "$n" | sort -V | tail -n 1)" = "$n" ] || {
+              echo "::error::version went down: $p -> $n" >&2; return 1; }
+            IFS=. read -ra pa <<< "$p"; IFS=. read -ra na <<< "$n"
+            if [ "${na[0]}" -gt "${pa[0]}" ]; then echo major
+            elif [ "${na[1]}" -gt "${pa[1]}" ]; then echo minor
+            else echo patch; fi
+          }
+
+          PREV_TAG="$(git tag -l | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1 || true)"
+
+          if [ -z "$PREV_TAG" ]; then
+            echo "No previous Skein release: this is the first one."
+            if ! printf '%s' "$FIRST_VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+              echo "::error::No Skein release exists yet. Pass first_version=X.Y.Z (gh workflow run release.yml -f first_version=1.0.0)."
+              exit 1
+            fi
+            VERSION="$FIRST_VERSION"
+            LEVEL="first"
+            PREV_API="none"; PREV_WEB="none"; PREV_FRONTEND="none"
+          else
+            prev_file="$(git show "${PREV_TAG}:versions.env" 2>/dev/null || true)"
+            if [ -z "$prev_file" ]; then
+              echo "::error::versions.env is missing in the previous release ${PREV_TAG}; cannot tell which service versions it contained."
+              exit 1
+            fi
+            pick() { printf '%s\n' "$prev_file" | sed -n "s/^$1=//p" | head -n 1; }
+            PREV_API="$(pick SKEIN_API_VERSION)"
+            PREV_WEB="$(pick SKEIN_WEB_VERSION)"
+            PREV_FRONTEND="$(pick SKEIN_FRONTEND_VERSION)"
+            for v in "$PREV_API" "$PREV_WEB" "$PREV_FRONTEND"; do
+              printf '%s' "$v" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' \
+                || { echo "::error::versions.env of ${PREV_TAG} is malformed."; exit 1; }
+            done
+
+            LEVEL="none"
+            for key in API WEB FRONTEND; do
+              prev_var="PREV_${key}"; new_var="NEW_${key}"
+              b="$(bump_of "${!prev_var}" "${!new_var}")"
+              echo "skein-${key,,}: ${!prev_var} -> ${!new_var} (${b})"
+              if [ "$b" != none ] && [ "$(rank "$b")" -gt "$(rank "$LEVEL")" ]; then LEVEL="$b"; fi
+            done
+
+            if [ "$LEVEL" = none ]; then
+              # No service changed. A change to this repository alone is a patch.
+              # Workflow files, the changelog and the pin file are not changes for
+              # people who run Skein.
+              if git diff --quiet "$PREV_TAG" HEAD -- . ':(exclude).github' ':(exclude)CHANGELOG.md' ':(exclude)versions.env'; then
+                echo "::error::Nothing changed since Skein ${PREV_TAG}: the latest service releases are the same and this repository has no changes besides workflows, the changelog and versions.env. No release made."
+                exit 1
+              fi
+              LEVEL="patch"
+              if [ "$BUMP_OVERRIDE" = major ]; then LEVEL="major"; fi
+              echo "Only this repository changed since ${PREV_TAG}: ${LEVEL} release."
+            elif [ "$BUMP_OVERRIDE" != none ]; then
+              echo "::error::bump_override applies only when no service changed. Services changed, so the bump is computed from them."
+              exit 1
+            fi
+
+            IFS=. read -r MA MI PA <<< "$PREV_TAG"
+            case "$LEVEL" in
+              major) VERSION="$((MA + 1)).0.0" ;;
+              minor) VERSION="${MA}.$((MI + 1)).0" ;;
+              *)     VERSION="${MA}.${MI}.$((PA + 1))" ;;
+            esac
+          fi
+
+          if git rev-parse -q --verify "refs/tags/${VERSION}" > /dev/null; then
+            echo "::error::Tag ${VERSION} already exists. Tags are never moved or reused."
+            exit 1
+          fi
+          if gh release view "$VERSION" > /dev/null 2>&1; then
+            echo "::error::A GitHub Release ${VERSION} already exists."
+            exit 1
+          fi
+
+          echo "New Skein version: ${VERSION} (${LEVEL})"
+          {
+            echo "PREV_TAG=${PREV_TAG}"
+            echo "PREV_API=${PREV_API}"
+            echo "PREV_WEB=${PREV_WEB}"
+            echo "PREV_FRONTEND=${PREV_FRONTEND}"
+            echo "VERSION=${VERSION}"
+            echo "LEVEL=${LEVEL}"
+          } >> "$RUNNER_TEMP/state.env"
+
+      - name: Sign in to the container registry
+        run: |
+          if [ -z "$GHCR_RELEASE_TOKEN" ]; then
+            if [ "$DRY_RUN" = true ]; then
+              echo "::warning::Secret GHCR_RELEASE_TOKEN is not set. A real run would stop here."
+              exit 0
+            fi
+            echo "::error::Secret GHCR_RELEASE_TOKEN is not set. Adding the skein-X.Y.Z tag to the service images needs a token with write access to those packages (a personal access token (classic) with write:packages; see RELEASING.md). Nothing was published."
+            exit 1
+          fi
+          printf '%s' "$GHCR_RELEASE_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+
+      - name: Check that every image exists and that the skein tags are free
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          . "$RUNNER_TEMP/state.env"
+
+          digest_of() {
+            docker buildx imagetools inspect "$1" --format '{{json .Manifest}}' 2>/dev/null | jq -r .digest
+          }
+
+          for pair in skein-api:API skein-web:WEB skein-frontend:FRONTEND; do
+            svc="${pair%%:*}"; key="${pair##*:}"
+            new_var="NEW_${key}"; ver="${!new_var}"
+            image="${REGISTRY}/${svc}:${ver}"
+
+            d="$(digest_of "$image" || true)"
+            if [ -z "$d" ] || [ "$d" = null ]; then
+              echo "::error::Image ${image} does not exist (or cannot be read). The service release ${ver} of ${svc} must have published it. Nothing was released."
+              exit 1
+            fi
+            platforms="$(docker buildx imagetools inspect "$image")"
+            for p in linux/amd64 linux/arm64; do
+              printf '%s\n' "$platforms" | grep -q "Platform:[[:space:]]*${p}\$" \
+                || { echo "::error::Image ${image} has no ${p} variant."; exit 1; }
+            done
+            echo "${image} -> ${d}"
+            echo "DIGEST_${key}=${d}" >> "$RUNNER_TEMP/state.env"
+
+            # A skein-X.Y.Z tag that already exists is accepted only if it is
+            # exactly this image (a re-run after a partial failure).
+            existing="$(digest_of "${REGISTRY}/${svc}:skein-${VERSION}" || true)"
+            if [ -n "$existing" ] && [ "$existing" != null ] && [ "$existing" != "$d" ]; then
+              echo "::error::${REGISTRY}/${svc}:skein-${VERSION} already exists and points to a different image (${existing}). Tags are never moved."
+              exit 1
+            fi
+          done
+
+      - name: Write versions.env, the changelog entry and the release notes
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          . "$RUNNER_TEMP/state.env"
+
+          cat > versions.env <<VERSIONS
+          # Written by the Release Skein workflow. Service versions that make up
+          # Skein ${VERSION}. Do not edit by hand.
+          SKEIN_VERSION=${VERSION}
+          SKEIN_API_VERSION=${NEW_API}
+          SKEIN_WEB_VERSION=${NEW_WEB}
+          SKEIN_FRONTEND_VERSION=${NEW_FRONTEND}
+          VERSIONS
+
+          base="https://github.com/${OWNER}"
+          today="$(date -u +%F)"
+          entry="- ${today} [Skein ${VERSION} · skein-api v${NEW_API} · skein-web v${NEW_WEB} · skein-frontend v${NEW_FRONTEND}] [RELEASE] Skein ${VERSION}. Service releases: [skein-api ${NEW_API}](${base}/skein-api/releases/tag/${NEW_API}), [skein-web ${NEW_WEB}](${base}/skein-web/releases/tag/${NEW_WEB}), [skein-frontend ${NEW_FRONTEND}](${base}/skein-frontend/releases/tag/${NEW_FRONTEND})."
+
+          grep -q '^## Recent Changes$' CHANGELOG.md \
+            || { echo "::error::CHANGELOG.md has no '## Recent Changes' heading."; exit 1; }
+          awk -v e="$entry" '/^## Recent Changes$/ && !d { print; getline; print; print e; d=1; next } { print }' \
+            CHANGELOG.md > "$RUNNER_TEMP/CHANGELOG.new"
+          mv "$RUNNER_TEMP/CHANGELOG.new" CHANGELOG.md
+
+          row() { # name previous new
+            if [ "$2" = none ]; then echo "| $1 | - | $3 | first release |"
+            elif [ "$2" = "$3" ]; then echo "| $1 | $2 | $3 | unchanged |"
+            else echo "| $1 | $2 | [$3](${base}/$1/releases/tag/$3) | changed |"; fi
+          }
+          {
+            echo "Skein ${VERSION} is the set of service versions below. Run it by pinning \`SKEIN_VERSION=${VERSION}\` in your \`.env\` (the images are taken with the tag \`skein-${VERSION}\`)."
+            echo
+            echo "| Service | Previous | In this release | |"
+            echo "|---|---|---|---|"
+            row skein-api "$PREV_API" "$NEW_API"
+            row skein-web "$PREV_WEB" "$NEW_WEB"
+            row skein-frontend "$PREV_FRONTEND" "$NEW_FRONTEND"
+            echo
+            echo "## Upgrading"
+            echo
+            echo "- Read the release notes of every changed service (links above) before you upgrade; they list environment variables and migrations that changed."
+            if [ "$LEVEL" = major ]; then
+              echo "- **This is a major release.** Something breaks for people who run Skein; follow the upgrade notes of the changed services and \`DEPLOYMENT-NOTES.md\` step by step, and take a backup first."
+            fi
+            echo "- Docker Compose: set \`SKEIN_VERSION=${VERSION}\` in \`.env\`, then \`docker compose -f docker-compose.production.yml pull\` and \`docker compose -f docker-compose.production.yml up -d\`."
+            echo "- Kubernetes: set \`newTag: skein-${VERSION}\` for the three images in \`deploy/kubernetes/kustomization.yaml\` and apply it."
+            echo "- Images: \`${REGISTRY}/skein-api:skein-${VERSION}\`, \`${REGISTRY}/skein-web:skein-${VERSION}\`, \`${REGISTRY}/skein-frontend:skein-${VERSION}\`."
+            if [ "$PREV_TAG" != "" ]; then
+              echo
+              echo "Full list of changes in this repository: ${base}/skein/compare/${PREV_TAG}...${VERSION}"
+            fi
+          } > "$RUNNER_TEMP/notes.md"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add versions.env CHANGELOG.md
+          git commit -m "Release Skein ${VERSION}"
+          git tag -a "${VERSION}" -m "Skein ${VERSION}"
+
+          {
+            echo "## Skein ${VERSION} (${LEVEL})"
+            echo
+            cat "$RUNNER_TEMP/notes.md"
+            echo
+            echo "Dry run: ${DRY_RUN}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # ---- From here on nothing can be undone. -------------------------------
+
+      - name: Add the skein tag to the three images
+        if: ${{ !inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          . "$RUNNER_TEMP/state.env"
+          for pair in skein-api:API skein-web:WEB skein-frontend:FRONTEND; do
+            svc="${pair%%:*}"; key="${pair##*:}"
+            new_var="NEW_${key}"; dig_var="DIGEST_${key}"
+            src="${REGISTRY}/${svc}:${!new_var}"
+            dst="${REGISTRY}/${svc}:skein-${VERSION}"
+            # Same manifest, new tag: nothing is rebuilt or copied.
+            docker buildx imagetools create -t "$dst" "$src" \
+              || { echo "::error::Could not tag ${dst}. If the message above is a permission error, the token in GHCR_RELEASE_TOKEN has no write access to the package ${svc}."; exit 1; }
+            got="$(docker buildx imagetools inspect "$dst" --format '{{json .Manifest}}' | jq -r .digest)"
+            if [ "$got" != "${!dig_var}" ]; then
+              echo "::error::${dst} has digest ${got}, expected ${!dig_var}."
+              exit 1
+            fi
+            echo "${dst} -> ${got}"
+          done
+
+      - name: Push the release commit and the tag
+        if: ${{ !inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          . "$RUNNER_TEMP/state.env"
+          # One atomic push: either both the commit and the tag arrive, or neither.
+          git push --atomic origin "HEAD:refs/heads/${DEFAULT_BRANCH}" "refs/tags/${VERSION}"
+
+      - name: Create the GitHub Release
+        if: ${{ !inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          . "$RUNNER_TEMP/state.env"
+          gh release create "$VERSION" --verify-tag --latest --title "Skein ${VERSION}" \
+            --notes-file "$RUNNER_TEMP/notes.md" \
+            || { echo "::error::The tag ${VERSION} and the skein-${VERSION} image tags exist, but the Release was not created. Create it by hand: gh release create ${VERSION} --verify-tag --title 'Skein ${VERSION}' --notes-file <notes>"; exit 1; }

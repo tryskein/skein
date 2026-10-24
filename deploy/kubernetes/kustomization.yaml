@@ -1,0 +1,28 @@
+# Skein on Kubernetes: the three application services.
+#
+#   kubectl create namespace <your-namespace>
+#   kubectl -n <your-namespace> apply -f secret.yaml      # your filled copy of secret.template.yaml
+#   kubectl -n <your-namespace> apply -k .
+#
+# Not in this list on purpose:
+#   - secret.template.yaml: it holds placeholders, you apply your own copy;
+#   - optional-dependencies/: a minimal PostgreSQL, Redis and NATS for trying
+#     Skein out, not for production (the reason is stated at the top of each file).
+#
+# The release is set in ONE place, `images` below: change `newTag` to the
+# `skein-X.Y.Z` tag of the Skein release you install. Tags look like
+# `skein-1.2.3`; never use `latest` for an installation you keep.
+resources:
+  - configmap.yaml
+  - skein-api.yaml
+  - skein-web.yaml
+  - skein-frontend.yaml
+  - ingress.yaml
+
+images:
+  - name: ghcr.io/tryskein/skein-api
+    newTag: skein-X.Y.Z # replace with the release you install
+  - name: ghcr.io/tryskein/skein-web
+    newTag: skein-X.Y.Z # replace with the release you install
+  - name: ghcr.io/tryskein/skein-frontend
+    newTag: skein-X.Y.Z # replace with the release you install

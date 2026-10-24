@@ -1,0 +1,152 @@
+# skein-api: business logic, REST (/api/v1), MCP (/mcp), the agent API
+# (/agent/v1). Reached only through skein-web; it has no Ingress route.
+# Its optional operator port is never exposed here.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: skein-api
+  labels:
+    app.kubernetes.io/name: skein-api
+    app.kubernetes.io/part-of: skein
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: skein-api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: skein-api
+        app.kubernetes.io/part-of: skein
+    spec:
+      # SHUTDOWN WINDOW. The kubelet sends SIGTERM after the preStop hook ends and
+      # sends SIGKILL terminationGracePeriodSeconds after the pod was marked
+      # Terminating, so the window must cover, in sequence:
+      #     preStop sleep                                   10 s
+      #   + HTTP drain (shutdownTimeout in skein-api)       25 s
+      #   + parallel teardown of NATS and the background
+      #     workers, each capped at                         10 s
+      #   = 45 s, plus a margin of 15 s                  -> 60 s.
+      # The sleep gives the endpoint removal time to reach the ingress
+      # controller and kube-proxy before the process stops accepting. With a
+      # window shorter than 45 s the kubelet kills the process in the middle of
+      # its own drain: in-flight requests and open MCP streams are cut and
+      # background workers are stopped mid-transaction. The 30 s cluster default
+      # is below the 25 s HTTP drain plus the teardown, which is why the field is
+      # set explicitly. Change one of these numbers and re-check the others.
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: skein-api
+      containers:
+        - name: skein-api
+          image: ghcr.io/tryskein/skein-api:skein-X.Y.Z
+          ports:
+            - name: http
+              containerPort: 5100
+          envFrom:
+            - configMapRef:
+                name: skein-api-config
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef: {name: skein-secrets, key: DATABASE_URL}
+            - name: SKEIN_INTERNAL_SECRET
+              valueFrom:
+                secretKeyRef: {name: skein-secrets, key: SKEIN_INTERNAL_SECRET}
+            - name: S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef: {name: skein-secrets, key: S3_ACCESS_KEY}
+            - name: S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef: {name: skein-secrets, key: S3_SECRET_KEY}
+            # Optional: only the first start of an empty database uses them.
+            - name: SKEIN_INITIAL_ADMIN_EMAIL
+              valueFrom:
+                secretKeyRef: {name: skein-secrets, key: SKEIN_INITIAL_ADMIN_EMAIL, optional: true}
+            - name: SKEIN_INITIAL_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: skein-secrets, key: SKEIN_INITIAL_ADMIN_PASSWORD, optional: true}
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              # The API hosts the embedding worker and the event publisher; both
+              # can burst above one core on a cold start or under upload load.
+              cpu: "2"
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "10"]
+          # The API does not listen until database migrations are finished. The
+          # startup probe holds the liveness probe back for up to 10 minutes
+          # (60 x 10 s): without it the liveness probe would kill the pod in the
+          # middle of a long migration and leave the migration state dirty.
+          startupProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 60
+          # Liveness never looks at dependencies: a database outage must take the
+          # pod out of traffic (readiness), not restart every replica at once.
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: {path: /ready, port: http}
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: skein-api
+  labels:
+    app.kubernetes.io/name: skein-api
+    app.kubernetes.io/part-of: skein
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: skein-api
+  ports:
+    - name: http
+      port: 5100
+      targetPort: http
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: skein-api
+  labels:
+    app.kubernetes.io/name: skein-api
+    app.kubernetes.io/part-of: skein
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: skein-api

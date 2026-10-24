@@ -1,0 +1,35 @@
+# Local environment — real values and secrets never go into git.
+# Templates such as .env.example are committed.
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# The code repositories are cloned into projects/ — each is its own git
+# repository (see README, Development).
+projects
+
+# AI agent local settings (per-developer, may hold tokens).
+.claude/settings.local.json
+.mcp.json
+
+# Editors and IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS metadata
+.DS_Store
+Thumbs.db
+
+# Logs and scratch output
+*.log
+tmp/
+
+CLAUDE.local.md
+docs/coderev/
+docs/research/
+docs/plan/
+docs/tasks/

@@ -1,0 +1,142 @@
+# EXAMPLE PostgreSQL 18 with pgvector for trying Skein out.
+#
+# NOT FOR PRODUCTION without more work. This is ONE instance on ONE volume:
+#   - no replica, no failover: a node or volume loss is a loss of the database;
+#   - no backups and no point-in-time recovery;
+#   - no TLS between Skein and the database (use sslmode=disable in DATABASE_URL);
+#   - default tuning (max_connections 100, shared_buffers 128MB).
+# For production use a managed PostgreSQL or an operator that gives you HA and
+# backups (for example CloudNativePG), and carry over the two requirements
+# below, which the application depends on.
+#
+# WHAT SKEIN REQUIRES OF ITS DATABASE (same as docker-compose.production.yml):
+#   - the extensions pg_trgm and vector, created by a privileged role (the
+#     application role is not allowed to CREATE EXTENSION; the SQL below runs once,
+#     on the first start of an empty data volume);
+#   - encoding UTF8 and a NON-C locale, set with ALL FOUR fields on the first
+#     initialisation of the cluster: provider builtin, builtin locale C.UTF-8,
+#     lc-collate C.UTF-8 and lc-ctype C.UTF-8. With ctype C, search by
+#     non-ASCII text, case-insensitive match and duplicate detection silently
+#     stop working (see DEPLOYMENT-NOTES.md, section 1). The locale cannot be
+#     changed afterwards without a dump and restore.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: skein-postgres-init
+  labels:
+    app.kubernetes.io/name: skein-postgres
+    app.kubernetes.io/part-of: skein
+data:
+  00-extensions.sql: |
+    CREATE EXTENSION IF NOT EXISTS pg_trgm;
+    CREATE EXTENSION IF NOT EXISTS vector;
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: skein-postgres
+  labels:
+    app.kubernetes.io/name: skein-postgres
+    app.kubernetes.io/part-of: skein
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: skein-postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: skein-postgres
+  labels:
+    app.kubernetes.io/name: skein-postgres
+    app.kubernetes.io/part-of: skein
+spec:
+  serviceName: skein-postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: skein-postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: skein-postgres
+        app.kubernetes.io/part-of: skein
+    spec:
+      # A clean shutdown of PostgreSQL ("fast" mode on SIGTERM) checkpoints the
+      # database; give it time instead of the 30 s default on a large database.
+      terminationGracePeriodSeconds: 120
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: postgres
+          # The image of docker-compose.production.yml, by digest.
+          image: pgvector/pgvector:pg18@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              value: skein
+            - name: POSTGRES_DB
+              value: skein
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: skein-optional-dependencies, key: POSTGRES_PASSWORD}
+            # PostgreSQL 18 images refuse a data directory that is the mount root.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+            - name: POSTGRES_INITDB_ARGS
+              value: "--encoding=UTF8 --locale-provider=builtin --builtin-locale=C.UTF-8 --lc-collate=C.UTF-8 --lc-ctype=C.UTF-8"
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              memory: 2Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: init
+              mountPath: /docker-entrypoint-initdb.d
+          startupProbe:
+            exec:
+              command: ["pg_isready", "-U", "skein", "-d", "skein"]
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "skein", "-d", "skein"]
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "skein", "-d", "skein"]
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 6
+      volumes:
+        - name: init
+          configMap:
+            name: skein-postgres-init
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        # storageClassName: <your-storage-class>   # the cluster default if omitted
+        resources:
+          requests:
+            storage: 10Gi

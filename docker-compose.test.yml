@@ -1,0 +1,146 @@
+# docker-compose.test.yml — throwaway integration-test stack for skein-api.
+#
+# Brings up ONLY what skein-api's Go integration tests actually need: a
+# migrated Postgres. Everything else those tests touch is in-process —
+# NATS via `natstest.RunServer`, the S3 store via an in-process fake (`fakeS3`) — so the
+# external surface is the database alone (every DB-backed test gates on
+# `TEST_DATABASE_URL`).
+#
+# Lifecycle is driven by scripts/integration-test.sh:
+#   postgres (build + healthy) → migrate (golang-migrate `up`) →
+#   test-runner (`go test`) → `down -v` (always, via a trap).
+#
+# Do NOT use this for day-to-day dev — that's docker-compose.local.yml.
+# This stack carries its own project name and its own volumes so a `down -v`
+# here can never touch the dev stack's data. The script passes a per-run
+# project name (`skein-itest-<run id>`, sk-482), so parallel runs are
+# isolated from EACH OTHER too; `name: skein-itest` below is only the
+# fallback for a bare `docker compose -f docker-compose.test.yml …`.
+#
+# Dev passwords ("qwerty12") are intentional local-only secrets
+# (acceptable in test/local compose files).
+
+name: skein-itest
+
+services:
+  # ------------------ Postgres (ephemeral test fixture) ------------------
+  # Same custom image as the dev stack (pgvector/pgvector:pg18 +
+  # init-extensions.sql baked in) so pg_trgm + vector are active before the
+  # first migration runs. No host port is published — the test-runner
+  # reaches it by service name on the private network, which avoids the
+  # devcontainer-can't-see-published-ports problem.
+  postgres:
+    build: ./projects/skein-api/infra/postgres
+    # Fixed tag (sk-482): without it compose names the image after the
+    # project, and a per-run project name would leave one image per run.
+    image: skein-itest-postgres
+    environment:
+      POSTGRES_USER: skein
+      POSTGRES_PASSWORD: qwerty12
+      POSTGRES_DB: skein
+      # postgres:18 requires PGDATA in a subdir of the mounted volume.
+      PGDATA: /var/lib/postgresql/data/pgdata
+      # sk-303.12 / DEPLOYMENT-NOTES.md §1 — matches docker-compose.local.yml's
+      # postgres service. Pinned explicitly rather than left to the base
+      # image's default so the integration suite (including
+      # internal/dependencies's duplicate-detection and locale-check tests)
+      # deterministically exercises the correctly-configured path instead of
+      # happening to, and so a future base-image swap can't silently flip it.
+      POSTGRES_INITDB_ARGS: "--locale-provider=builtin --builtin-locale=C.UTF-8 --lc-collate=C.UTF-8 --lc-ctype=C.UTF-8"
+    volumes:
+      - pgdata-test:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U skein -d skein"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+  # ------------------ Migrations (one-shot) ------------------
+  # golang-migrate applies projects/skein-api/src/migrations against the
+  # fixture. Runs to completion (exit 0) before the test-runner starts; the
+  # wrapper script invokes it as a discrete `compose run` step.
+  migrate:
+    image: migrate/migrate:v4.20.1
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      # HOST_WORKSPACE is the repo path on the DOCKER DAEMON's host (see
+      # root .env) — bind-mount sources resolve daemon-side, which differs
+      # from this devcontainer's /workspaces path. Falls back to ./ for the
+      # straight-host case.
+      - ${HOST_WORKSPACE:-.}/projects/skein-api/src/migrations:/migrations:ro
+    # migrate/migrate's entrypoint is `migrate`; these are its args.
+    command:
+      - "-path=/migrations"
+      - "-database=postgres://skein:qwerty12@postgres:5432/skein?sslmode=disable"
+      - "up"
+    restart: "no"
+
+  # ------------------ Go test runner ------------------
+  # Mounts the skein-api module source and runs `go test` against the
+  # migrated fixture. `-p 1` serialises packages: because every package
+  # shares this one database, serial execution removes the cross-package
+  # races that the shared dev DB worked around with SKEIN_TEST_PARALLEL_PKGS
+  # — here we instead run the FULL suite, no skips. Module + build caches
+  # are named volumes so reruns don't re-download the world.
+  test-runner:
+    # golang:1.26-alpine + python3 (projects/skein-api/infra/test-runner/Dockerfile): Go tests
+    # exec the served monitor runner and skip without python3. Fixed tag, as
+    # for postgres (sk-482): one image, not one per run.
+    build: ./projects/skein-api/infra/test-runner
+    image: skein-itest-runner
+    working_dir: /src
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      TEST_DATABASE_URL: postgres://skein:qwerty12@postgres:5432/skein?sslmode=disable
+      CGO_ENABLED: "0"
+      GOTOOLCHAIN: local
+      GOFLAGS: -buildvcs=false
+    volumes:
+      # Daemon-side repo path — see the migrate service note above.
+      - ${HOST_WORKSPACE:-.}/projects/skein-api/src:/src
+      - gomod-cache:/go/pkg/mod
+      - gobuild-cache:/root/.cache/go-build
+    # git is needed for module resolution of some deps; alpine go image
+    # ships it, but add-on safety: install if missing is unnecessary here.
+    command: ["go", "test", "-p", "1", "./..."]
+    restart: "no"
+
+volumes:
+  # Ephemeral DB data — removed by `down -v` every run (that's the point).
+  pgdata-test:
+  # Go module + build caches are EXTERNAL so `down -v` does NOT wipe them:
+  # the DB is throwaway, but re-downloading the module graph and recompiling
+  # the world on every run would make the harness uselessly slow. The
+  # wrapper script creates these volumes on demand (idempotent).
+  gomod-cache:
+    external: true
+    name: skein-itest-gomod
+  gobuild-cache:
+    external: true
+    name: skein-itest-gobuild
+
+# The network is created by scripts/integration-test.sh, one per run, and is
+# EXTERNAL here (sk-482). Two reasons it is not declared inline any more:
+#
+#   - Parallel runs. A fixed `name:` + fixed subnet made two simultaneous
+#     runs share (or fight over) one network, and the first `down -v`
+#     took the second run's database with it.
+#   - Subnet choice. The subnet must stay OUTSIDE 192.168.0.0/16 so the
+#     bridge gateway never collides with a home router's LAN (192.168.0.1 /
+#     192.168.1.1) — some hosts' docker default-address-pool hands out
+#     192.168.x blocks, so docker must NOT auto-pick. The script walks
+#     10.211.N.0/24 and lets `docker network create` itself arbitrate: the
+#     daemon refuses an overlapping subnet atomically, so two runs racing
+#     for the same N cannot both get it — the loser moves on to N+1.
+#
+# Running this file by hand therefore needs SKEIN_ITEST_NETWORK pointing at
+# an existing network; use the script.
+networks:
+  default:
+    external: true
+    name: ${SKEIN_ITEST_NETWORK:?SKEIN_ITEST_NETWORK is not set - run scripts/integration-test.sh}

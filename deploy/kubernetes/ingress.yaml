@@ -1,0 +1,89 @@
+# Routing, as described in ARCHITECTURE.md (Kubernetes): the API paths go
+# straight to skein-web, everything else to skein-frontend.
+#
+# WHAT YOU SET
+#   - ingressClassName: the class of YOUR ingress controller (kubectl get
+#     ingressclass). Left out below on purpose; without it the cluster default
+#     class, if any, is used.
+#   - host: the public host name (the same as in SKEIN_AGENT_PUBLIC_URL).
+#   - TLS: terminate https here. skein-web needs X-Forwarded-Proto from the
+#     controller to set the Secure flag of the session cookie; every common
+#     controller sends it. The `tls` block names a Secret you provide (or one
+#     your certificate manager fills).
+#
+# CONTROLLER-SPECIFIC SETTINGS. The annotations below are for ingress-nginx and
+# are ignored by other controllers; with another controller, configure the same
+# behaviour in its own terms:
+#   - /mcp and /agent/v1 stream: no response buffering, long read timeout;
+#   - /hub is WebSocket: upgrade allowed (ingress-nginx does it by default),
+#     long read timeout;
+#   - /hub with more than one skein-web replica needs session affinity, see the
+#     second Ingress below.
+#
+# ALL paths listed for skein-web are needed. The agent API (/agent/v1) and the
+# OAuth metadata documents must not fall through to skein-frontend: it would
+# answer them with the HTML of the web UI (200 text/html) and agents would not
+# work. /oauth2 is used only in the single sign-on modes.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: skein
+  labels:
+    app.kubernetes.io/name: skein
+    app.kubernetes.io/part-of: skein
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-request-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+spec:
+  # ingressClassName: <your-ingress-class>
+  tls:
+    - hosts: [skein.example.com]
+      secretName: <your-tls-secret>
+  rules:
+    - host: skein.example.com
+      http:
+        paths:
+          - {path: /api, pathType: Prefix, backend: {service: {name: skein-web, port: {number: 8080}}}}
+          - {path: /mcp, pathType: Prefix, backend: {service: {name: skein-web, port: {number: 8080}}}}
+          - {path: /agent/v1, pathType: Prefix, backend: {service: {name: skein-web, port: {number: 8080}}}}
+          - {path: /oauth2, pathType: Prefix, backend: {service: {name: skein-web, port: {number: 8080}}}}
+          - {path: /.well-known/oauth-protected-resource, pathType: Prefix, backend: {service: {name: skein-web, port: {number: 8080}}}}
+          - {path: /, pathType: Prefix, backend: {service: {name: skein-frontend, port: {number: 5102}}}}
+---
+# The SignalR hub on its own Ingress so that session affinity can be set for it
+# alone. SignalR negotiates on one request and upgrades to a WebSocket on the
+# next; the connection exists only in the memory of the pod that answered the
+# negotiation, so with several skein-web replicas both requests must reach the
+# same pod. The example runs ONE skein-web replica (replicas: 1 in
+# skein-web.yaml), so the affinity below is not needed until you raise it. With
+# more replicas, the cookie affinity below does the job on ingress-nginx; other
+# controllers need the equivalent for /hub. On ingress-nginx the annotations are
+# harmless with one replica; other controllers ignore them.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: skein-hub
+  labels:
+    app.kubernetes.io/name: skein
+    app.kubernetes.io/part-of: skein
+  annotations:
+    nginx.ingress.kubernetes.io/affinity: "cookie"
+    nginx.ingress.kubernetes.io/affinity-mode: "persistent"
+    nginx.ingress.kubernetes.io/session-cookie-name: "skein-hub"
+    nginx.ingress.kubernetes.io/session-cookie-path: "/hub"
+    nginx.ingress.kubernetes.io/session-cookie-samesite: "Lax"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+spec:
+  # ingressClassName: <your-ingress-class>
+  tls:
+    - hosts: [skein.example.com]
+      secretName: <your-tls-secret>
+  rules:
+    - host: skein.example.com
+      http:
+        paths:
+          - {path: /hub, pathType: Prefix, backend: {service: {name: skein-web, port: {number: 8080}}}}

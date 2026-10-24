@@ -1,0 +1,8 @@
+# Publishes Garage's S3 port for the local stack: the browser uploads and
+# downloads straight from the store with presigned URLs (S3_PUBLIC_URL =
+# http://localhost:3900), so the host must reach it. Included next to
+# garage.dev.yml by docker-compose.local.yml.
+services:
+  garage:
+    ports:
+      - "3900:3900"

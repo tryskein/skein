@@ -1,0 +1,117 @@
+# skein-frontend: nginx with the web UI bundle. It reads no environment
+# variables. Its nginx also forwards /api, /hub, /mcp, /agent/v1 and the OAuth
+# paths to the host `skein-web:8080`, so a cluster whose Ingress sends
+# everything to this Service works too; ingress.yaml routes those paths to
+# skein-web directly, which saves a hop.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: skein-frontend
+  labels:
+    app.kubernetes.io/name: skein-frontend
+    app.kubernetes.io/part-of: skein
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: skein-frontend
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: skein-frontend
+        app.kubernetes.io/part-of: skein
+    spec:
+      # SHUTDOWN WINDOW. With the routing of ingress.yaml this pod serves static
+      # files only, whose requests are short: preStop sleep 5 s + a few seconds
+      # of drain -> 30 s is ample. If you route the API paths through this nginx
+      # instead, its streams (/mcp, /hub, up to 3600 s of proxy timeout) outlive
+      # any window: use the window of skein-web (60 s) or longer, knowing that
+      # streams still open at the end are cut.
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: skein-frontend
+      containers:
+        - name: skein-frontend
+          image: ghcr.io/tryskein/skein-frontend:skein-X.Y.Z
+          ports:
+            - name: http
+              containerPort: 5102
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              # nginx starts one worker per CPU of the NODE (not of the limit),
+              # about 10 MiB each: a 64 MiB limit was OOM-killed on a large node.
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "5"]
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: skein-frontend
+  labels:
+    app.kubernetes.io/name: skein-frontend
+    app.kubernetes.io/part-of: skein
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: skein-frontend
+  ports:
+    - name: http
+      port: 5102
+      targetPort: http
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: skein-frontend
+  labels:
+    app.kubernetes.io/name: skein-frontend
+    app.kubernetes.io/part-of: skein
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: skein-frontend

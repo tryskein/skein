@@ -1,0 +1,511 @@
+# docker-compose.production.yml — Skein on a single server, from published images.
+#
+# Who runs it: a person (or their agent) installing Skein on one host. The
+# step-by-step runbook is INSTALL.md; every setting is described in the
+# environment reference of its service:
+#   skein-api      projects/skein-api/docs/env-reference.md
+#   skein-web      projects/skein-web/docs/env-reference.md
+#   skein-frontend projects/skein-frontend/docs/env-reference.md
+#
+# What it runs: skein-frontend (nginx, the only entry point), skein-web,
+# skein-api, PostgreSQL 18 with pgvector, Redis, NATS and — under one of the
+# store profiles `garage` (the default), `seaweedfs` or `rustfs` — a bundled
+# single-node S3 store for attachments. Without a store profile the attachments
+# go to an external S3 service (S3_URL and friends in `.env`). Pick at most one
+# store profile in COMPOSE_PROFILES: they all publish SKEIN_S3_PORT.
+#
+# How it differs from docker-compose.local.yml:
+#   - images come from the registry, pinned to one Skein release
+#     (SKEIN_VERSION); nothing is built here;
+#   - every secret, address and choice comes from `.env` (see `.env.example`);
+#     there are no development values in this file;
+#   - skein-frontend is published on 127.0.0.1 by default, for a TLS reverse
+#     proxy on the same host; local publishes it on all interfaces, plain HTTP;
+#   - Redis keeps its data (AOF): it holds sessions and cookie keys, and
+#     losing it signs everyone out;
+#   - the Docker network has a fixed subnet, so skein-web can be told which
+#     peer it may believe (SKEIN_TRUSTED_PROXIES);
+#   - container logs are rotated;
+#   - no Vite dev server, no development ports. The bundled stores have no web
+#     console published.
+#
+# Usage (from the directory that holds this file and `.env`):
+#   docker compose -f docker-compose.production.yml config -q   # syntax and required values
+#   docker compose -f docker-compose.production.yml pull
+#   docker compose -f docker-compose.production.yml up -d --wait
+#
+# Needs Docker Compose v2.23.1 or newer (inline `configs: content:`).
+#
+# Variables that skein-api and skein-web read but this file does not list are
+# NOT passed to them. To use one, add a line `NAME:` under the service's
+# `environment:`; it is then taken from `.env` when present and left unset
+# when not. Never write `NAME=` with an empty value to mean "off": in both
+# services an empty value is not the same as an absent one.
+
+name: skein
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+services:
+  # ------------------ PostgreSQL 18 + pgvector ------------------
+  # Stock pgvector image. The two extensions Skein needs are created on the
+  # first start of an empty data volume by the SQL below (the application user
+  # has no CREATE EXTENSION privilege, so migrations cannot do it).
+  # The locale is explicit on purpose, all four fields: on a `C` locale
+  # non-ASCII search, ILIKE and lower() silently stop working. It can only be
+  # chosen when the volume is first initialised — see DEPLOYMENT-NOTES.md §1.
+  postgres:
+    image: ${POSTGRES_IMAGE:-pgvector/pgvector:pg18@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11}
+    environment:
+      POSTGRES_USER: skein
+      POSTGRES_DB: skein
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      # PostgreSQL 18 images refuse a data directory that is the mount root.
+      PGDATA: /var/lib/postgresql/data/pgdata
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale-provider=builtin --builtin-locale=C.UTF-8 --lc-collate=C.UTF-8 --lc-ctype=C.UTF-8"
+    configs:
+      - source: postgres-extensions
+        target: /docker-entrypoint-initdb.d/00-extensions.sql
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U skein -d skein"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+    logging: *logging
+
+  # ------------------ Redis ------------------
+  # Sessions, the cookie-encryption key ring, the login throttle and the
+  # SignalR backplane. AOF persistence: a restart must not sign everyone out.
+  redis:
+    image: redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+    logging: *logging
+
+  # ------------------ NATS ------------------
+  # The live-update bus: skein-api publishes, skein-web's SignalR hub
+  # subscribes. Core NATS only — neither service uses JetStream, so there is no
+  # NATS data volume. `-m 8222` serves the monitoring endpoint the healthcheck
+  # reads; it is not published.
+  nats:
+    image: nats:2.12-alpine@sha256:b270f5e2428354c0335612694d7dd2fb588148e567a5757fdff325ef9c9332e6
+    command: ["-m", "8222"]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:8222/healthz || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+    logging: *logging
+
+  # ------------------ Garage (bundled attachment storage) ------------------
+  # Profile `garage`, enabled by COMPOSE_PROFILES=garage in .env (the default of
+  # .env.example). One profile per bundled store (`seaweedfs` and `rustfs` follow
+  # this one), each with its own service, sharing the S3_* variables of skein-api;
+  # with no store profile the attachments go to an external S3 service.
+  # Single node, replication_factor = 1. The replication factor CANNOT be changed
+  # after the first start; it is fixed in the config below. Garage has no web
+  # console. Data lives in the `garage-data` volume (metadata in LMDB beside it).
+  # Browsers upload and download straight from the store with presigned links, so
+  # its S3 port (3900) must be reachable from them: published on 127.0.0.1 for the
+  # TLS reverse proxy, which serves it under S3_PUBLIC_URL. The RPC port (3901) is
+  # never published.
+  # Image: the official one, pinned by digest (v2.4.1). It holds a single binary
+  # and no shell, so there is no init sidecar: `--single-node --default-bucket`
+  # make Garage itself apply a one-node layout, create the access key
+  # S3_ACCESS_KEY / S3_SECRET_KEY (the fixed key skein-api signs with), create the
+  # bucket S3_BUCKET and grant the key read, write and owner on it (owner lets
+  # skein-api set the bucket CORS rule at its own start). All of it is repeated on
+  # every start and is a no-op once done. If the key exists with another secret,
+  # or S3_ACCESS_KEY / S3_SECRET_KEY are empty or too short (key id 8+
+  # characters, secret 16+), Garage stops with an error instead of running open.
+  # Healthy = the bucket exists, so skein-api waits for key and bucket.
+  # GARAGE_RPC_SECRET (64 hex characters: `openssl rand -hex 32`) comes from .env.
+  # Runs as root inside the container so that it can write to a fresh named volume.
+  # Stops `docker compose up` with a clear message when the Garage settings in
+  # .env are missing or malformed. Without it Garage restarts forever on a bad
+  # GARAGE_RPC_SECRET while skein-api, which only optionally waits for the store,
+  # starts with attachments off, and `up` reports success. The Garage image has
+  # no shell, so the check runs in the (already pinned) Redis image.
+  garage-settings-check:
+    profiles: ["garage"]
+    image: redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
+    entrypoint: ["/bin/sh", "-c"]
+    environment:
+      GARAGE_RPC_SECRET: ${GARAGE_RPC_SECRET:-}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-}
+    command:
+      - |
+        ok=1
+        case "$$GARAGE_RPC_SECRET" in *[!0-9a-fA-F]*) ok=0 ;; esac
+        [ "$${#GARAGE_RPC_SECRET}" -eq 64 ] || ok=0
+        [ "$$ok" = 1 ] || echo "GARAGE_RPC_SECRET must be set in .env: exactly 64 hex characters (openssl rand -hex 32)" >&2
+        [ "$${#S3_ACCESS_KEY}" -ge 8 ] || { echo "S3_ACCESS_KEY must be set in .env: at least 8 characters" >&2; ok=0; }
+        [ "$${#S3_SECRET_KEY}" -ge 16 ] || { echo "S3_SECRET_KEY must be set in .env: at least 16 characters" >&2; ok=0; }
+        [ "$$ok" = 1 ]
+    restart: "no"
+    logging: *logging
+
+  garage:
+    profiles: ["garage"]
+    image: ${GARAGE_IMAGE:-dxflrs/garage:v2.4.1@sha256:9c96caa2612d3411acc5b0e6701fb238dbfba33e533a6d7d3d811a4b12d0d020}
+    command: ["/garage", "server", "--single-node", "--default-bucket"]
+    depends_on:
+      garage-settings-check:
+        condition: service_completed_successfully
+    environment:
+      GARAGE_RPC_SECRET: ${GARAGE_RPC_SECRET:-}
+      GARAGE_DEFAULT_ACCESS_KEY: ${S3_ACCESS_KEY:-}
+      GARAGE_DEFAULT_SECRET_KEY: ${S3_SECRET_KEY:-}
+      GARAGE_DEFAULT_BUCKET: ${S3_BUCKET:-skein-attachments}
+    configs:
+      - source: garage-config
+        target: /etc/garage.toml
+    ports:
+      - "${SKEIN_S3_BIND_ADDRESS:-127.0.0.1}:${SKEIN_S3_PORT:-3900}:3900"
+    volumes:
+      - garage-data:/data
+    healthcheck:
+      # No shell and no curl in the image; /garage talks to its own daemon.
+      test: ["CMD", "/garage", "bucket", "info", "${S3_BUCKET:-skein-attachments}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+    restart: unless-stopped
+    logging: *logging
+
+  # ------------------ SeaweedFS (bundled attachment storage, alternative) ------------------
+  # Profile `seaweedfs`: COMPOSE_PROFILES=seaweedfs instead of garage. Open edition
+  # (Apache-2.0) only, single node: `weed mini` runs master, volume server, filer
+  # and S3 gateway in one process. The cluster topology (a master and 2+ volume
+  # servers) is NOT shipped here. Data, the filer metadata and the keys SeaweedFS
+  # generates for itself live in the `seaweedfs-data` volume. The S3 port (8333) is
+  # published on SKEIN_S3_BIND_ADDRESS:SKEIN_S3_PORT for the TLS reverse proxy,
+  # exactly like Garage's; every other port of the process (master, filer, WebDAV,
+  # admin UI, ...) stays inside the container and is not published.
+  # Credentials: the identity of skein-api is the config `seaweedfs-s3`, written by
+  # Compose from S3_ACCESS_KEY / S3_SECRET_KEY. It has Read, List, Write and
+  # Tagging, no Admin, so the key cannot create buckets: the bucket S3_BUCKET is
+  # created by `-bucket=` at the start of SeaweedFS (a no-op if it exists).
+  # The entrypoint below stops the container when either variable is empty, so it
+  # never runs without a key. Keep the key to letters, digits, '.', '_' and '-'
+  # (it is written into JSON). Changing the key in `.env` and restarting is enough.
+  # Anonymous statistics to seaweedfs.com are switched off (-master.telemetry=false).
+  # CORS: SeaweedFS answers any Origin by default; skein-api sets the bucket rule
+  # from S3_CORS_ALLOWED_ORIGINS at its start. Healthy = the bucket exists (the
+  # filer inside the container lists it), so skein-api waits for it.
+  # Image: the official one, pinned by digest (4.48). It starts as root, fixes the
+  # ownership of /data and drops to its own user by itself.
+  seaweedfs:
+    profiles: ["seaweedfs"]
+    image: ${SEAWEEDFS_IMAGE:-chrislusf/seaweedfs:4.48@sha256:4e61d15fd35994cb1e43e1e553dff106794841fd9a99ade2fc8c8bfce4d7872d}
+    entrypoint:
+      - /bin/sh
+      - -c
+      - 'if [ -z "$$S3_ACCESS_KEY" ] || [ -z "$$S3_SECRET_KEY" ]; then echo "S3_ACCESS_KEY and S3_SECRET_KEY must be set in .env" >&2; exit 1; fi; exec /entrypoint.sh "$$@"'
+      - sh
+    command:
+      - mini
+      - -dir=/data
+      - -ip=seaweedfs
+      - -s3.config=/etc/seaweedfs/s3.json
+      - -bucket=${S3_BUCKET:-skein-attachments}
+      - -master.telemetry=false
+    environment:
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-}
+    configs:
+      - source: seaweedfs-s3
+        target: /etc/seaweedfs/s3.json
+    ports:
+      - "${SKEIN_S3_BIND_ADDRESS:-127.0.0.1}:${SKEIN_S3_PORT:-3900}:8333"
+    volumes:
+      - seaweedfs-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:8888/buckets/${S3_BUCKET:-skein-attachments}/ || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+    restart: unless-stopped
+    logging: *logging
+
+  # ------------------ RustFS (bundled attachment storage, alternative) ------------------
+  # Profile `rustfs`: COMPOSE_PROFILES=rustfs instead of garage. Single node only:
+  # RustFS's own distributed mode is not production-ready and is not shipped here.
+  # Data lives in the `rustfs-data` volume (a named volume is required: the image
+  # runs as uid 10001 and a fresh named volume takes that ownership; a host
+  # directory would need `chown 10001:10001`). The S3 port (9000) is published on
+  # SKEIN_S3_BIND_ADDRESS:SKEIN_S3_PORT; the console port (9001) is not.
+  # Credentials: RUSTFS_ACCESS_KEY / RUSTFS_SECRET_KEY are S3_ACCESS_KEY /
+  # S3_SECRET_KEY, the root key of the store. It may create buckets, so the bucket
+  # S3_BUCKET is created by skein-api at its start (MakeBucket, idempotent). The
+  # entrypoint below stops the container when either variable is empty: without
+  # them RustFS would fall back to its well-known default key.
+  # CORS is OFF in RustFS until a rule is set; skein-api sets it from
+  # S3_CORS_ALLOWED_ORIGINS at its start. Do not set RUSTFS_CORS_ALLOWED_ORIGINS:
+  # it does not expose Content-Disposition to the browser.
+  # The image has no HEALTHCHECK; healthy = /health/ready of the S3 port answers 200.
+  # Image: the official one, pinned by digest (1.0.3).
+  rustfs:
+    profiles: ["rustfs"]
+    image: ${RUSTFS_IMAGE:-rustfs/rustfs:1.0.3@sha256:9ca9559533b537d10482fe923288b676ad08f92a7069d9a17327fbae3cab688b}
+    entrypoint:
+      - /bin/sh
+      - -c
+      - 'if [ -z "$$RUSTFS_ACCESS_KEY" ] || [ -z "$$RUSTFS_SECRET_KEY" ]; then echo "S3_ACCESS_KEY and S3_SECRET_KEY must be set in .env" >&2; exit 1; fi; exec /entrypoint.sh "$$@"'
+      - sh
+    command: ["rustfs"]
+    environment:
+      RUSTFS_ACCESS_KEY: ${S3_ACCESS_KEY:-}
+      RUSTFS_SECRET_KEY: ${S3_SECRET_KEY:-}
+      RUSTFS_REGION: ${S3_REGION:-us-east-1}
+    ports:
+      - "${SKEIN_S3_BIND_ADDRESS:-127.0.0.1}:${SKEIN_S3_PORT:-3900}:9000"
+    volumes:
+      - rustfs-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:9000/health/ready || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+    logging: *logging
+
+  # ------------------ skein-api (Go) ------------------
+  # Business logic, REST and MCP. Applies database migrations before it opens
+  # its port, so the first start takes longer. Internal: never published.
+  # Every variable below is described in skein-api's env-reference.md.
+  skein-api:
+    image: ${SKEIN_REGISTRY:-ghcr.io/tryskein}/skein-api:skein-${SKEIN_VERSION:?set SKEIN_VERSION in .env}
+    environment:
+      # Fixed by this file: where the other containers are.
+      PORT: "5100"
+      DATABASE_URL: postgres://skein:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/skein?sslmode=disable
+      NATS_URL: nats://nats:4222
+      # Required.
+      SKEIN_INTERNAL_SECRET: ${SKEIN_INTERNAL_SECRET:?set SKEIN_INTERNAL_SECRET in .env}
+      SKEIN_AGENT_PUBLIC_URL: ${SKEIN_AGENT_PUBLIC_URL:?set SKEIN_AGENT_PUBLIC_URL in .env}
+      # Taken from .env when present, otherwise left unset (the service default applies).
+      LOG_LEVEL:
+      SKEIN_INSTANCE_NAME:
+      # Address and links.
+      SKEIN_APP_BASE_URL:
+      # Sign-in, first administrator.
+      SKEIN_AUTH_MODE:
+      SKEIN_INITIAL_ADMIN_EMAIL:
+      SKEIN_INITIAL_ADMIN_USERNAME:
+      SKEIN_INITIAL_ADMIN_NAME:
+      SKEIN_INITIAL_ADMIN_PASSWORD:
+      SKEIN_BOOTSTRAP_ADMIN_EMAIL:
+      SKEIN_BREAKGLASS_ADMIN:
+      SKEIN_AUTO_PROVISION:
+      SKEIN_OIDC_DEFAULT_ROLE:
+      SKEIN_OAUTH_AUTHORIZATION_SERVERS:
+      # Installation shape: spaces, registration, limits.
+      SKEIN_INSTANCE_ADMIN_ENABLED:
+      SKEIN_COMMON_SPACE_ENABLED:
+      SKEIN_SIGNUP_ENABLED:
+      SKEIN_SPACE_CREATION:
+      SKEIN_PROJECT_DEFAULT_VISIBILITY:
+      SKEIN_SPACE_MEMBER_LIMIT:
+      SKEIN_SPACE_OWNED_LIMIT:
+      SKEIN_SPACE_INVITES_PER_DAY:
+      SKEIN_SPACE_INVITE_TTL:
+      SKEIN_QUOTA_PERSONAL_PROJECTS:
+      SKEIN_QUOTA_PERSONAL_STORAGE_BYTES:
+      SKEIN_QUOTA_SPACE_PROJECTS:
+      SKEIN_QUOTA_SPACE_STORAGE_BYTES:
+      SKEIN_PROJECT_PREFIX_MIN_LENGTH:
+      SKEIN_TURNSTILE_SITE_KEY:
+      SKEIN_TURNSTILE_SECRET:
+      SKEIN_TERMS_URL:
+      SKEIN_PRIVACY_URL:
+      # Operator API (only for a SaaS operator; its port is never published).
+      SKEIN_OPERATOR_API_ENABLED:
+      SKEIN_OPERATOR_API_KEY:
+      SKEIN_OPERATOR_API_PORT:
+      # Outgoing mail.
+      SKEIN_EMAIL_ENABLED:
+      SKEIN_SMTP_HOST:
+      SKEIN_SMTP_PORT:
+      SKEIN_SMTP_TLS_MODE:
+      SKEIN_SMTP_USERNAME:
+      SKEIN_SMTP_PASSWORD:
+      SKEIN_SMTP_FROM:
+      SKEIN_EMAIL_DELIVERY_TTL:
+      # Attachments (S3). With a bundled store S3_URL is its in-network address:
+      # http://garage:3900, http://seaweedfs:8333 or http://rustfs:9000.
+      S3_URL:
+      S3_PUBLIC_URL:
+      S3_USE_SSL:
+      S3_ACCESS_KEY:
+      S3_SECRET_KEY:
+      S3_BUCKET:
+      S3_REGION:
+      # Browser origins the bucket CORS rule is set for at start; by default the
+      # public address of the installation. Set it only if the UI is served from
+      # another origin (comma separated). Set it EMPTY (S3_CORS_ALLOWED_ORIGINS=)
+      # to leave the bucket CORS alone, e.g. an external bucket you manage by
+      # hand: only an unset variable falls back to the public address.
+      S3_CORS_ALLOWED_ORIGINS: ${S3_CORS_ALLOWED_ORIGINS-${SKEIN_AGENT_PUBLIC_URL:-}}
+      SKEIN_ATTACHMENT_MAX_SIZE_BYTES:
+      # Semantic search.
+      OLLAMA_URL:
+      OLLAMA_MODEL:
+      OLLAMA_API_KEY:
+      # Push notifications, password check.
+      SKEIN_VAPID_PUBLIC:
+      SKEIN_VAPID_PRIVATE:
+      SKEIN_VAPID_SUBJECT:
+      SKEIN_PWNED_PASSWORDS_ENABLED:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      garage:
+        # Only exists under the `garage` profile; healthy = key and bucket exist.
+        condition: service_healthy
+        required: false
+      seaweedfs:
+        # Only exists under the `seaweedfs` profile; healthy = the bucket exists.
+        condition: service_healthy
+        required: false
+      rustfs:
+        # Only exists under the `rustfs` profile; healthy = the store is ready.
+        condition: service_healthy
+        required: false
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:5100/healthz || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    logging: *logging
+
+  # ------------------ skein-web (.NET BFF) ------------------
+  # Sessions, sign-in, the SignalR hub and the proxy to skein-api. Internal:
+  # the browser reaches it only through skein-frontend. Every variable below is
+  # described in skein-web's env-reference.md.
+  skein-web:
+    image: ${SKEIN_REGISTRY:-ghcr.io/tryskein}/skein-web:skein-${SKEIN_VERSION:?set SKEIN_VERSION in .env}
+    environment:
+      PORT: "8080"
+      SKEIN_API_URL: http://skein-api:5100
+      REDIS_URL: redis://redis:6379
+      NATS_URL: nats://nats:4222
+      SKEIN_INTERNAL_SECRET: ${SKEIN_INTERNAL_SECRET:?set SKEIN_INTERNAL_SECRET in .env}
+      # The peer skein-web sees is the skein-frontend container, inside this
+      # compose network, so by default that network is the trusted proxy.
+      # See INSTALL.md before relying on per-IP limits behind a TLS proxy.
+      SKEIN_TRUSTED_PROXIES: ${SKEIN_TRUSTED_PROXIES:-${SKEIN_NETWORK_SUBNET:-172.29.88.0/24}}
+      SKEIN_API_STARTUP_TIMEOUT_SECONDS:
+      SKEIN_MCP_URL:
+      SKEIN_MCP_UPSTREAM_HEADERS_TIMEOUT_SECONDS:
+      # Single sign-on (modes keycloak and hybrid).
+      Authentication__Oidc__Authority:
+      Authentication__Oidc__ClientId:
+      Authentication__Oidc__ClientSecret:
+      Authentication__Oidc__AllowedGroup:
+      Authentication__Oidc__CallbackPath:
+      Authentication__Oidc__SignedOutCallbackPath:
+      Authentication__LogoutRedirectUrl:
+    depends_on:
+      skein-api:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/healthz || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+    logging: *logging
+
+  # ------------------ skein-frontend (nginx + web UI) ------------------
+  # The only entry point. Serves the UI and forwards /api, /hub, /mcp and the
+  # agent paths to skein-web. Plain HTTP: put a TLS reverse proxy in front of
+  # it (INSTALL.md, section 2). Reads no environment variables.
+  skein-frontend:
+    image: ${SKEIN_REGISTRY:-ghcr.io/tryskein}/skein-frontend:skein-${SKEIN_VERSION:?set SKEIN_VERSION in .env}
+    ports:
+      - "${SKEIN_BIND_ADDRESS:-127.0.0.1}:${SKEIN_HTTP_PORT:-8080}:5102"
+    depends_on:
+      skein-web:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:5102/healthz || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+    logging: *logging
+
+configs:
+  postgres-extensions:
+    content: |
+      CREATE EXTENSION IF NOT EXISTS pg_trgm;
+      CREATE EXTENSION IF NOT EXISTS vector;
+  garage-config:
+    content: |
+      metadata_dir = "/data/meta"
+      data_dir = "/data/data"
+      db_engine = "lmdb"
+      replication_factor = 1
+      rpc_bind_addr = "[::]:3901"
+
+      [s3_api]
+      s3_region = "us-east-1"
+      api_bind_addr = "[::]:3900"
+  # The identity of skein-api for SeaweedFS (profile `seaweedfs`). No Admin action.
+  seaweedfs-s3:
+    content: |
+      {
+        "identities": [
+          {
+            "name": "skein-api",
+            "credentials": [{"accessKey": "${S3_ACCESS_KEY:-}", "secretKey": "${S3_SECRET_KEY:-}"}],
+            "actions": ["Read", "List", "Write", "Tagging"]
+          }
+        ]
+      }
+
+volumes:
+  postgres-data:
+  redis-data:
+  garage-data:
+  seaweedfs-data:
+  rustfs-data:
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: ${SKEIN_NETWORK_SUBNET:-172.29.88.0/24}

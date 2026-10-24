@@ -1,0 +1,175 @@
+# docker-compose.e2e.yml — throwaway LIVE stack for the e2e level (sk-442).
+#
+# The whole product the way a user reaches it: skein-frontend (nginx: SPA +
+# /api, /hub, /mcp → skein-web) → skein-web (.NET BFF: cookie session,
+# SignalR hub, /api/v1 proxy) → skein-api (Go: REST, migrations at start,
+# NATS outbox) + Postgres, Redis, NATS, Garage (S3). Playwright runs in the
+# `e2e-runner` container on the same network against
+# http://skein-frontend:5102.
+#
+# Lifecycle is driven by scripts/e2e-test.sh (one command):
+#   network (own subnet) → up --wait (healthchecks) → e2e-runner → down -v.
+# Do NOT use this for day-to-day dev — that's docker-compose.local.yml.
+#
+# Isolation (the pattern of docker-compose.test.yml, sk-482): the script
+# passes a per-run project name `skein-e2e-<run id>` and a per-run external
+# network; nothing here publishes a host port, so a live dev stack on host
+# :8080 is neither touched nor in the way, and parallel runs do not meet.
+#
+# Images. Every image name comes from a variable the script sets:
+#   - build mode (default): docker-compose.e2e.build.yml adds `build:` from
+#     the working trees in ./projects/*, so a local change — including a
+#     deliberate mutation of the frontend — is what gets tested;
+#   - registry mode: the published images at release tags.
+#
+# Service wiring: stock pgvector/pgvector:pg18 (not the dev stack's
+# projects/skein-api/infra/postgres image) and the start wrappers of skein-api
+# and skein-web below.
+#
+# Installation settings are left at their defaults (password login). skein-web
+# has no login-mode setting of its own (it reads SKEIN_AUTH_MODE from skein-api
+# at startup), so the former Authentication__Mode / Authentication__Hybrid have
+# no place here.
+#
+# Dev passwords ("qwerty12", the Garage dev key) are intentional local-only secrets
+# (acceptable in test/local compose files).
+
+name: skein-e2e
+
+# The S3 store for attachments: a single-node Garage that makes its own layout,
+# key and bucket at start, shared with docker-compose.local.yml — see
+# garage/garage.dev.yml. No port is
+# published (isolation, see above): Playwright's browser reaches the store by
+# its service name on the run's network, as S3_PUBLIC_URL below says.
+include:
+  - garage/garage.dev.yml
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg18
+    environment:
+      POSTGRES_USER: skein
+      POSTGRES_PASSWORD: qwerty12
+      POSTGRES_DB: skein
+      # sk-303.12 — locale set by all four fields.
+      POSTGRES_INITDB_ARGS: "--locale-provider=builtin --builtin-locale=C.UTF-8 --lc-collate=C.UTF-8 --lc-ctype=C.UTF-8"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U skein -d skein"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # distroless — no in-container healthcheck possible; skein-api's wrapper
+  # waits for its port instead.
+  nats:
+    image: nats:latest
+    command: ["-js"]
+
+  skein-api:
+    image: ${E2E_API_IMAGE:?E2E_API_IMAGE is not set - run scripts/e2e-test.sh}
+    entrypoint:
+      - sh
+      - -c
+      - |
+        set -e
+        timeout 120 sh -c 'until pg_isready -h postgres -p 5432 -U skein -d skein -q; do sleep 1; done'
+        psql -h postgres -U skein -d skein -v ON_ERROR_STOP=1 -q -c 'CREATE EXTENSION IF NOT EXISTS pg_trgm' -c 'CREATE EXTENSION IF NOT EXISTS vector'
+        timeout 120 sh -c 'until nc -z nats 4222; do sleep 1; done'
+        exec /app/server
+    environment:
+      PORT: "5100"
+      SERVICE_NAME: skein-api
+      ENVIRONMENT: development
+      LOG_LEVEL: info
+      PGPASSWORD: qwerty12
+      DATABASE_URL: postgres://skein:qwerty12@postgres:5432/skein?sslmode=disable
+      REDIS_URL: redis://redis:6379
+      NATS_URL: nats://nats:4222
+      SKEIN_INTERNAL_SECRET: e2e-internal-secret-change-me-32chars-minimum
+      SKEIN_INITIAL_ADMIN_EMAIL: admin@test.com
+      SKEIN_INITIAL_ADMIN_PASSWORD: qwerty12
+      SKEIN_INITIAL_ADMIN_USERNAME: admin
+      SKEIN_INITIAL_ADMIN_NAME: Administrator
+      # Key and bucket are created by Garage from the same values
+      # (GARAGE_DEFAULT_* in garage/garage.dev.yml). The browser is Playwright on this network:
+      # its page origin is the frontend, its S3 endpoint the service name.
+      S3_URL: http://garage:3900
+      S3_PUBLIC_URL: http://garage:3900
+      S3_ACCESS_KEY: skeinlocal
+      S3_SECRET_KEY: skein-local-dev-secret-key
+      S3_BUCKET: skein-attachments
+      S3_REGION: us-east-1
+      S3_CORS_ALLOWED_ORIGINS: http://skein-frontend:5102
+      SKEIN_AGENT_PUBLIC_URL: http://skein-frontend:5102
+    depends_on:
+      garage:
+        condition: service_healthy
+    healthcheck:
+      # /ready checks Postgres and the S3 store; the port opens only after migrations.
+      test: ["CMD-SHELL", "curl -fsS http://localhost:5100/ready || exit 1"]
+      interval: 2s
+      timeout: 3s
+      retries: 90
+
+  skein-web:
+    image: ${E2E_WEB_IMAGE:?E2E_WEB_IMAGE is not set - run scripts/e2e-test.sh}
+    entrypoint:
+      - sh
+      - -c
+      - |
+        set -e
+        timeout 240 sh -c 'until curl -fsS -o /dev/null http://skein-api:5100/ready; do sleep 1; done'
+        timeout 60 sh -c 'until nc -z redis 6379; do sleep 1; done'
+        exec dotnet SkeinWeb.dll
+    environment:
+      PORT: "8080"
+      ASPNETCORE_ENVIRONMENT: Development
+      SKEIN_API_URL: http://skein-api:5100
+      SKEIN_INTERNAL_SECRET: e2e-internal-secret-change-me-32chars-minimum
+      REDIS_URL: redis://redis:6379
+      NATS_URL: nats://nats:4222
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/ready || exit 1"]
+      interval: 2s
+      timeout: 3s
+      retries: 150
+
+  skein-frontend:
+    image: ${E2E_FRONTEND_IMAGE:?E2E_FRONTEND_IMAGE is not set - run scripts/e2e-test.sh}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:5102/healthz || exit 1"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # Playwright — started by the script with `run`, never by `up` (profile).
+  # The frontend tree is bind-mounted with its node_modules; browsers come
+  # from the image (its version equals @playwright/test in package.json —
+  # test-groups-guard / the harness check that).
+  e2e-runner:
+    profiles: ["runner"]
+    image: mcr.microsoft.com/playwright:v1.63.0-noble
+    working_dir: /work
+    # init: forwards SIGTERM to node when the script is interrupted.
+    init: true
+    environment:
+      E2E_BASE_URL: http://skein-frontend:5102
+      E2E_READY_URLS: http://skein-api:5100/ready,http://skein-web:8080/ready
+    volumes:
+      # HOST_WORKSPACE is the repo path on the DOCKER DAEMON's host (root
+      # .env) — bind-mount sources resolve daemon-side. Falls back to ./ for
+      # the straight-host case (same as docker-compose.test.yml).
+      - ${HOST_WORKSPACE:-.}/projects/skein-frontend:/work
+
+networks:
+  default:
+    external: true
+    name: ${SKEIN_E2E_NETWORK:?SKEIN_E2E_NETWORK is not set - run scripts/e2e-test.sh}

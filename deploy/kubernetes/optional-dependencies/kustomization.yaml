@@ -1,0 +1,12 @@
+# Example PostgreSQL, Redis and NATS for trying Skein out. NOT FOR PRODUCTION
+# without more work - the reason is stated at the top of each file.
+#
+#   kubectl -n <your-namespace> apply -f secret.yaml     # your filled copy of secret.template.yaml
+#   kubectl -n <your-namespace> apply -k optional-dependencies
+#
+# Their Services are called skein-postgres, skein-redis and skein-nats; the
+# defaults of ../configmap.yaml already point at skein-nats.
+resources:
+  - postgres.yaml
+  - redis.yaml
+  - nats.yaml

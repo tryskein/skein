@@ -1,0 +1,24 @@
+# docker-compose.e2e.build.yml — build mode of the e2e stack (sk-442).
+#
+# Layered over docker-compose.e2e.yml by scripts/e2e-test.sh (default mode,
+# `--images build`): builds skein-api, skein-web and skein-frontend from the
+# working trees in ./projects/*, tagged with the E2E_*_IMAGE names the script
+# sets. Registry mode (`--images registry`) does not load this file, so the
+# published images are pulled instead.
+
+services:
+  skein-api:
+    build:
+      context: ./projects/skein-api
+      dockerfile: Dockerfile
+
+  skein-web:
+    build:
+      context: ./projects/skein-web
+      dockerfile: Dockerfile
+
+  skein-frontend:
+    build:
+      context: ./projects/skein-frontend
+      args:
+        APP_VERSION: e2e-worktree

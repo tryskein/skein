@@ -1,0 +1,337 @@
+# docker-compose.local.yml — single-command local stack for Skein.
+#
+# Brings up: Postgres 18, Redis 7, NATS, skein-api (Go), skein-web (.NET
+# BFF — internal), skein-frontend (nginx serving the SPA + reverse-
+# proxying /api, /hub, /oauth2 to skein-web). Only skein-frontend is
+# exposed on host:8080 — the rest sit on the internal "skein" network.
+#
+# Usage:
+#   docker-compose -f docker-compose.local.yml up -d --build
+#   curl http://localhost:8080/healthz   # → 200 ok  (nginx)
+#   curl http://localhost:8080/version.json
+#   open http://localhost:8080            # → React UI ("Skein")
+#   docker-compose -f docker-compose.local.yml down -v
+#
+# The dev passwords ("qwerty12") and unsealed credentials are intentional —
+# local-only secrets in *.local.yml files are acceptable.
+
+name: skein
+
+# The S3 store for attachments (R4.2): a single-node Garage, which makes its own
+# layout, key and bucket at start — see garage/garage.dev.yml, shared with
+# docker-compose.e2e.yml. The browser uploads and downloads straight from it with presigned URLs
+# (skein-api never proxies bytes), so its S3 port is published on the host:
+# garage/ports-local.yml maps 3900:3900, and skein-api's S3_PUBLIC_URL below is
+# what ends up in every presigned URL. Garage has no web console.
+include:
+  - path:
+      - garage/garage.dev.yml
+      - garage/ports-local.yml
+
+services:
+  # ------------------ Postgres 18 ------------------
+  # Will host application schema (R0.3) and pgvector for semantic search (R4).
+  # Internal-only — application connects via the docker network.
+  postgres:
+    # Custom image: pgvector/pgvector:pg18 + baked-in init-extensions.sql.
+    # Built locally from projects/skein-api/infra/postgres/. The base image has pg_trgm and vector
+    # extensions compiled in but does not activate them; init-extensions.sql in
+    # /docker-entrypoint-initdb.d/ runs CREATE EXTENSION at first volume init
+    # under the postgres superuser. In production the PostgreSQL operator or
+    # provisioning step must run the equivalent against a pgvector-flavour image.
+    build: ./projects/skein-api/infra/postgres
+    environment:
+      POSTGRES_USER: skein
+      POSTGRES_PASSWORD: qwerty12
+      POSTGRES_DB: skein
+      # postgres:18 (and derived images like pgvector/pgvector:pg18) require
+      # PGDATA to live in a subdirectory of the mounted volume, otherwise the
+      # entrypoint refuses to start with "unused mount/volume" error.
+      PGDATA: /var/lib/postgresql/data/pgdata
+      # sk-303.12 / DEPLOYMENT-NOTES.md §1 — explicit on purpose, not relied
+      # on by luck. Getting this wrong is silent: the service starts,
+      # migrates, and serves 200s either way — only non-ASCII duplicate-
+      # issue detection (pg_trgm), ILIKE, and lower()/upper() quietly stop
+      # working, on `C`/`POSIX` (the default `initdb` would otherwise pick
+      # on some base images, e.g. Alpine-flavoured Postgres). PostgreSQL 17+
+      # builtin `C.UTF-8` gives Unicode-aware classification with the same
+      # version stability as `C`. All four fields are required — LC_COLLATE
+      # and LC_CTYPE do not reliably inherit from --builtin-locale alone;
+      # see DEPLOYMENT-NOTES.md §1's "half configured" measurement table for
+      # exactly what a partial setting (provider right, LC_CTYPE still `C`)
+      # silently leaves broken. skein-api itself now warns at startup if it
+      # ever connects to a database that got this wrong (sk-303.12).
+      POSTGRES_INITDB_ARGS: "--locale-provider=builtin --builtin-locale=C.UTF-8 --lc-collate=C.UTF-8 --lc-ctype=C.UTF-8"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      # pg_isready is the canonical Postgres readiness probe.
+      test: ["CMD-SHELL", "pg_isready -U skein -d skein"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  # ------------------ Redis 7 ------------------
+  # Will host session storage in R5 (auth) and caching for skein-web.
+  # Internal-only.
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+
+  # ------------------ NATS ------------------
+  # Internal pub/sub for event fan-out (skein-api → skein-web SignalR
+  # subscribers in R3). JetStream enabled for future durable streams; we'll
+  # decide in R3 whether to keep core-only or use streams.
+  #
+  # `-m 8222` enables the HTTP monitoring server so an external probe can
+  # curl /healthz. The official nats image is distroless (no shell, no nc),
+  # so we cannot run a healthcheck inside the container itself; depends_on
+  # uses service_started for nats and any consumer (skein-api) connects with
+  # its own retry loop. Adequate for R0.2 — NATS has no schema or data
+  # dependency that needs to be ready before clients start.
+  nats:
+    image: nats:latest
+    command: ["-js", "-m", "8222"]
+    restart: unless-stopped
+
+  # ------------------ skein-api (Go) ------------------
+  # Internal only — never exposed on host. skein-web reverse-proxies to it.
+  skein-api:
+    build:
+      context: ./projects/skein-api
+      dockerfile: Dockerfile
+    environment:
+      PORT: "5100"
+      SERVICE_NAME: skein-api
+      ENVIRONMENT: development
+      LOG_LEVEL: debug
+      # Connection strings to neighboring services. Used in R0.3+; harmless
+      # to set now — skein-api ignores env vars it doesn't read.
+      DATABASE_URL: postgres://skein:qwerty12@postgres:5432/skein?sslmode=disable
+      REDIS_URL: redis://redis:6379
+      NATS_URL: nats://nats:4222
+      # R1.1 standalone-auth wiring. SKEIN_INTERNAL_SECRET authenticates the
+      # skein-web (BFF) → skein-api channel; SKEIN_INITIAL_ADMIN_* seed the
+      # very first admin user when the users table is empty.
+      # Local-only dev secrets in *.local.yml are acceptable.
+      SKEIN_INTERNAL_SECRET: local-dev-internal-secret-change-me-32chars-min
+      SKEIN_INITIAL_ADMIN_EMAIL: admin@test.com
+      SKEIN_INITIAL_ADMIN_PASSWORD: qwerty12
+      SKEIN_INITIAL_ADMIN_USERNAME: admin
+      SKEIN_INITIAL_ADMIN_NAME: Administrator
+      # sk-674.18 — installation settings, written out so the local stack
+      # shows which knobs exist (every value equals the default). The login mode is set
+      # here only — skein-web takes it from skein-api at startup; changing it
+      # means restarting both. Switching to a public-registration (SaaS-style) setup needs a fresh
+      # database: with an admin in the data and SKEIN_INSTANCE_ADMIN_ENABLED
+      # =false skein-api refuses to start.
+      SKEIN_AUTH_MODE: local
+      SKEIN_INSTANCE_ADMIN_ENABLED: "true"
+      SKEIN_COMMON_SPACE_ENABLED: "true"
+      SKEIN_SPACE_CREATION: all
+      SKEIN_PROJECT_DEFAULT_VISIBILITY: members
+      SKEIN_SIGNUP_ENABLED: "false"
+      SKEIN_EMAIL_ENABLED: "false"
+      SKEIN_OPERATOR_API_ENABLED: "false"
+      # R1.5 search — Ollama embedding endpoint (qwen3-embedding:0.6b,
+      # 1024-dim halfvec).  The backfill worker fills embeddings on
+      # every issue/comment/project/component create + edit; the search
+      # service consults these for hybrid RRF ranking.  When OLLAMA_URL
+      # is empty, search degrades to FTS-only and the worker is
+      # disabled — useful for offline dev.
+      #
+      # Overridable because the embedding server is usually NOT part of this
+      # stack: point OLLAMA_URL in your .env at wherever yours runs. The
+      # default names a host that does not exist on purpose — a wrong-but-
+      # plausible address would fail slowly and confusingly, while an obviously
+      # fake one fails immediately and search simply degrades to full-text.
+      OLLAMA_URL: ${OLLAMA_URL:-http://ollama.example.invalid:11434}
+      OLLAMA_MODEL: qwen3-embedding:0.6b
+      # R4.2 attachments. S3_URL is the in-network endpoint of the store
+      # (garage/garage.dev.yml); S3_PUBLIC_URL is the host:port the browser sees
+      # in presigned URLs (rendered into upload-url responses). The key and the
+      # bucket are created by Garage from GARAGE_DEFAULT_* in garage.dev.yml, so
+      # these S3_* values must match them. S3_CORS_ALLOWED_ORIGINS is
+      # the origins of the UI in the browser (the stack on :8080, Vite on :5173,
+      # and host.docker.internal:8080 when the stack runs in a container): skein-api sets
+      # the bucket CORS rule from them at start, because Garage does not reflect
+      # Origin by itself. Override with S3_CORS_ALLOWED_ORIGINS for another host.
+      S3_URL: http://garage:3900
+      S3_PUBLIC_URL: http://localhost:3900
+      S3_ACCESS_KEY: skeinlocal
+      S3_SECRET_KEY: skein-local-dev-secret-key
+      S3_BUCKET: skein-attachments
+      S3_REGION: us-east-1
+      S3_CORS_ALLOWED_ORIGINS: ${S3_CORS_ALLOWED_ORIGINS:-http://localhost:8080,http://localhost:5173,http://host.docker.internal:8080}
+      # Web Push (VAPID). Optional: leave both keys empty and Web Push stays
+      # off. To try it locally, generate a pair and put it in .env (see
+      # .env.example); never commit the private key. The PUBLIC key is handed
+      # to the browser via GET /api/v1/push/config; the PRIVATE key signs the
+      # VAPID JWT on the send path.
+      SKEIN_VAPID_PUBLIC: ${SKEIN_VAPID_PUBLIC:-}
+      SKEIN_VAPID_PRIVATE: ${SKEIN_VAPID_PRIVATE:-}
+      SKEIN_VAPID_SUBJECT: ${SKEIN_VAPID_SUBJECT:-mailto:admin@skein.local}
+      # Public base URL agents use to reach /agent/v1 (task-monitor bootstrap).
+      # Required by config.Load(); locally that's the host entrypoint
+      # (skein-frontend nginx → skein-web → skein-api).
+      SKEIN_AGENT_PUBLIC_URL: ${SKEIN_AGENT_PUBLIC_URL:-http://localhost:8080}
+      # sk-304 — `authorization_servers` of the RFC 9728 protected-resource
+      # metadata document served on /.well-known/oauth-protected-resource[/mcp].
+      # OPTIONAL: unset switches OAuth discovery off (no /.well-known routes, no
+      # WWW-Authenticate on a /mcp 401) and the service still starts and still
+      # serves /mcp with a static `ska_` api key; a value that IS set but
+      # malformed is fatal at startup. Set here so the local stack exercises the
+      # enabled path. The local stack runs no Keycloak (auth mode is "local"),
+      # so this value is never actually contacted — it only has to have the
+      # SHAPE of a realm URL, so the discovery document a developer sees locally
+      # looks like the real one. Point it at your own realm via .env if you are
+      # testing against a live IdP.
+      SKEIN_OAUTH_AUTHORIZATION_SERVERS: ${SKEIN_OAUTH_AUTHORIZATION_SERVERS:-https://keycloak.example.com/realms/skein}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      nats:
+        # nats:latest is distroless; healthcheck inside the container is not
+        # possible. Consumers retry on connect.
+        condition: service_started
+      garage:
+        # Healthy = key and bucket exist (garage/garage.dev.yml).
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:5100/healthz || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+
+  # ------------------ skein-frontend-dev (Vite dev server) ------------------
+  # OPTIONAL dev-mode container: runs `vite dev` against bind-mounted
+  # source so the SPA gets hot-module reload as you edit src/. The
+  # production-built nginx image (skein-frontend below, port 8080)
+  # keeps working independently — you choose:
+  #
+  #   http://localhost:5173   → vite dev with HMR (this container)
+  #   http://localhost:8080   → skein-frontend nginx with the bundle
+  #                              baked at compose-build
+  #
+  # Vite proxies /api/* and /hub to skein-web internally so cookie auth
+  # and SignalR work the same way as in production. node_modules lives
+  # in a named volume to isolate it from any host-installed copy
+  # (which could be a wrong arch when developing on macOS/Windows).
+  #
+  # CHOKIDAR_USEPOLLING is ON because bind mounts on WSL2/Docker Desktop
+  # do NOT propagate inotify events reliably; polling is the standard
+  # workaround and the perf cost is negligible for a frontend tree this size.
+  skein-frontend-dev:
+    image: node:22-alpine
+    working_dir: /app
+    command: sh -c "npm install --no-audit --no-fund && npm run dev -- --host 0.0.0.0 --port 5173"
+    volumes:
+      # HOST_WORKSPACE is resolved on the docker DAEMON side, not in this
+      # compose CLI's working dir — the daemon may live in a different mount
+      # namespace (Docker Desktop on WSL2, Codespaces dind, …). The .env at
+      # repo root supplies the value; default falls back to ./ for the
+      # straight-host case.
+      - ${HOST_WORKSPACE:-./}/projects/skein-frontend:/app
+      - skein-frontend-node_modules:/app/node_modules
+    environment:
+      VITE_PROXY_TARGET: http://skein-web:8080
+      CHOKIDAR_USEPOLLING: "true"
+      NODE_ENV: development
+    ports:
+      - "5173:5173"
+    depends_on:
+      skein-web:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ------------------ skein-frontend (production-built nginx) ------------------
+  # Independent SPA artefact — separated from skein-web in May 2026 so
+  # frontend-only changes (CSS, copy fixes, A/B tests) do not roll the BFF
+  # and disrupt live SignalR sessions. nginx serves the built bundle
+  # plus path-routes /api/*, /hub, /oauth2/* to skein-web. The host-
+  # exposed entrypoint of the whole stack.
+  skein-frontend:
+    build:
+      context: ./projects/skein-frontend
+      args:
+        # APP_VERSION → public/version.json inside the bundle. SPA polls
+        # /version.json every 60s and surfaces an "update available"
+        # banner when the deployed version diverges from the one loaded
+        # at page start. Local builds tag as "dev"; CI override
+        # with the real image tag.
+        APP_VERSION: "${APP_VERSION:-dev}"
+    ports:
+      - "8080:5102"
+    depends_on:
+      skein-web:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:5102/healthz || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+
+  # ------------------ skein-web (.NET BFF) ------------------
+  # Internal-only service after the May 2026 frontend split. Hosts the
+  # cookie session, SignalR Hub on /hub, auth controllers under
+  # /api/auth/*, and the api-proxy middleware that forwards /api/v1/*
+  # to skein-api. skein-frontend nginx is the public entrypoint and
+  # reverse-proxies these paths in.
+  skein-web:
+    build:
+      context: ./projects/skein-web
+      dockerfile: Dockerfile
+    expose:
+      - "8080"
+    environment:
+      PORT: "8080"
+      ASPNETCORE_ENVIRONMENT: Development
+      # URL of the internal API — used by the reverse proxy in R1.1+.
+      SKEIN_API_URL: http://skein-api:5100
+      # R1.1b BFF auth wiring. SKEIN_INTERNAL_SECRET must match skein-api
+      # exactly (channel auth header). REDIS_URL is used for both the
+      # session ticket store and the DataProtection key ring so multiple
+      # skein-web replicas share cookie-encryption keys.
+      # Local-only dev secrets in *.local.yml are acceptable.
+      SKEIN_INTERNAL_SECRET: local-dev-internal-secret-change-me-32chars-min
+      REDIS_URL: redis://redis:6379
+      # R3.2c — SignalR Hub subscribes to skein-api's NATS firehose for
+      # live browser updates. Same NATS instance the skein-api outbox
+      # dispatcher publishes to.
+      NATS_URL: nats://nats:4222
+    depends_on:
+      skein-api:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/healthz || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  skein-frontend-node_modules:
+
+networks:
+  default:
+    name: skein

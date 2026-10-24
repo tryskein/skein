@@ -1,0 +1,67 @@
+# garage/garage.dev.yml — the bundled S3 store of the DEVELOPMENT stacks.
+#
+# Included (compose `include:`) by docker-compose.local.yml and
+# docker-compose.e2e.yml, so the two stacks share one
+# definition of a single-node Garage. The production file keeps its own copy (it
+# is downloaded alone and cannot include anything); the two must stay
+# equivalent — change both together.
+#
+# No init container. The Garage image holds one binary (/garage) and no shell,
+# so a sidecar could not run the several `garage` commands a fresh node needs
+# (layout, key, bucket, permission). Garage does it itself: started with
+# `--single-node --default-bucket` it applies a one-node layout, creates the
+# access key GARAGE_DEFAULT_ACCESS_KEY / GARAGE_DEFAULT_SECRET_KEY, creates the
+# bucket GARAGE_DEFAULT_BUCKET and grants the key read, write and owner on it
+# (owner is what lets skein-api set the bucket CORS rule at its own start).
+# Every start repeats this idempotently; if the key exists with another secret
+# Garage stops with an error instead of carrying on.
+#
+# Healthy = the bucket exists (`/garage bucket info`), so a service that depends
+# on `garage: service_healthy` finds key and bucket ready.
+#
+# Dev-only fixed credentials, in the clear, as in every *.local.yml
+# (dev-only). Garage accepts any key id of 8+ characters and any
+# secret of 16+; it does not require its own `GK…` / 64-hex format. The same
+# values are written in skein-api's S3_ACCESS_KEY / S3_SECRET_KEY in each stack.
+#
+# replication_factor = 1 (single node). It cannot be changed after the first start.
+# Garage has no web console and no admin API here (no [admin] block).
+
+services:
+  garage:
+    image: dxflrs/garage:v2.4.1@sha256:9c96caa2612d3411acc5b0e6701fb238dbfba33e533a6d7d3d811a4b12d0d020
+    command: ["/garage", "server", "--single-node", "--default-bucket"]
+    environment:
+      GARAGE_RPC_SECRET: 0000000000000000000000000000000000000000000000000000000000000000
+      GARAGE_DEFAULT_ACCESS_KEY: skeinlocal
+      GARAGE_DEFAULT_SECRET_KEY: skein-local-dev-secret-key
+      GARAGE_DEFAULT_BUCKET: skein-attachments
+    configs:
+      - source: garage-config
+        target: /etc/garage.toml
+    volumes:
+      - garage-data:/data
+    healthcheck:
+      # No shell and no curl in the image; /garage talks to its own daemon.
+      test: ["CMD", "/garage", "bucket", "info", "skein-attachments"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+      start_period: 3s
+    restart: unless-stopped
+
+configs:
+  garage-config:
+    content: |
+      metadata_dir = "/data/meta"
+      data_dir = "/data/data"
+      db_engine = "lmdb"
+      replication_factor = 1
+      rpc_bind_addr = "[::]:3901"
+
+      [s3_api]
+      s3_region = "us-east-1"
+      api_bind_addr = "[::]:3900"
+
+volumes:
+  garage-data:
