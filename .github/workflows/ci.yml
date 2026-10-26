@@ -6,9 +6,19 @@ name: CI
 # scripts/integration-test.sh (see DEVELOPMENT.md).
 
 on:
+  # A change that touches only top-level Markdown files, docs/ or LICENSE is
+  # not built or tested. workflow_call (the release workflow) is not filtered.
   pull_request:
+    paths-ignore:
+      - "*.md"
+      - "docs/**"
+      - LICENSE
   push:
     branches: [main]
+    paths-ignore:
+      - "*.md"
+      - "docs/**"
+      - LICENSE
   workflow_call:
 
 permissions:
