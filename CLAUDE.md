@@ -25,14 +25,22 @@ Setting up this layout from scratch: [`DEVELOPMENT.md`](DEVELOPMENT.md).
 ## Local stack
 
 ```bash
-docker compose -f docker-compose.local.yml up -d --build
+# published images, nothing to build (installing, trying out, testing):
+docker compose --env-file versions.env -f docker-compose.local.yml up -d
+# built from projects/* with a Vite dev server (development only):
+docker compose --env-file versions.env -f docker-compose.local.yml \
+  -f docker-compose.local.build.yml up -d --build
 # UI:  http://localhost:8080   (seeded admin: admin@test.com / qwerty12)
 # MCP: http://localhost:8080/mcp  (header X-Skein-Api-Key: ska_...)
 ```
 
+Unless the person explicitly asks for source development or a build of modified
+code, use the published images for installing, trying out and testing Skein; do
+not clone the service repositories for that.
+
 Only the frontend nginx (8080) is the application entry point. Garage's S3
 port (3900) is also published, for the browser's presigned URLs; Garage has no
-console. Postgres, Redis, NATS, skein-api and skein-web stay on the internal
+console. Both ports are bound to `127.0.0.1`. Postgres, Redis, NATS, skein-api and skein-web stay on the internal
 compose network. The credentials above are for local development only.
 
 ## Docs

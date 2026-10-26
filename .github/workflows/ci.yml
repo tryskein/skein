@@ -36,7 +36,7 @@ jobs:
           set -euo pipefail
           # Fail if a new compose file appears that this step does not know:
           # it would otherwise be skipped silently.
-          known="docker-compose.e2e.build.yml docker-compose.e2e.yml docker-compose.local.yml docker-compose.production.yml docker-compose.test.yml"
+          known="docker-compose.e2e.build.yml docker-compose.e2e.yml docker-compose.local.build.yml docker-compose.local.yml docker-compose.production.yml docker-compose.test.yml"
           found=""
           for f in docker-compose*.yml; do found="${found:+$found }$f"; done
           if [ "$found" != "$known" ]; then
@@ -44,7 +44,8 @@ jobs:
             exit 1
           fi
 
-          docker compose -f docker-compose.local.yml config -q
+          docker compose --env-file versions.env -f docker-compose.local.yml config -q
+          docker compose --env-file versions.env -f docker-compose.local.yml -f docker-compose.local.build.yml config -q
           docker compose -f docker-compose.e2e.build.yml config -q
 
           SKEIN_E2E_NETWORK=ci E2E_API_IMAGE=ci/api E2E_WEB_IMAGE=ci/web E2E_FRONTEND_IMAGE=ci/frontend \

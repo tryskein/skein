@@ -60,16 +60,16 @@ Run the checks and collect the results into one short report for the person.
 |---|---|---|---|
 | git | `git --version` | everything | any recent |
 | Docker Engine | `docker version` | local stack, integration, e2e | — |
-| Docker Compose v2 plugin | `docker compose version` | local stack, harnesses (they call `docker compose`, and the e2e harness uses `up --wait`) | v2 |
+| Docker Compose v2 plugin | `docker compose version` | local stack, harnesses (they call `docker compose`, and the e2e harness uses `up --wait`) | v2, 2.23.1 or newer (the local stack uses inline `configs`) |
 | Go | `go version` | skein-api unit tests; `check-theme-mirror.sh` verifies goldens with it when present | `go 1.26.1` in `skein-api/src/go.mod`; images build on `golang:1.26-alpine` |
 | .NET SDK | `dotnet --list-sdks` | skein-web unit tests | `net10.0` in `skein-web/src/SkeinWeb.csproj`; image builds on `mcr.microsoft.com/dotnet/sdk:10.0-alpine` |
 | Node.js + npm | `node --version`, `npm --version` | skein-frontend unit tests, `check-theme-mirror.sh` | no `.nvmrc` or `engines` field; the Dockerfile and the dev container use `node:22-alpine`, so use Node 22 |
 | Python 3 | `python3 --version` | optional: skein-api's Python runner tests; some Go tests skip without it | stdlib only |
 | Disk | `df -h .` | images, Go/npm caches, volumes | the repositories state no figure — report free space to the person |
 
-The local stack itself only needs git and Docker: every service is built
-inside containers. The language toolchains are needed to run unit tests on the
-host.
+The local stack itself only needs git and Docker: the published images need no
+toolchain, and with the build overlay the three services are built inside
+containers. The language toolchains are needed to run unit tests on the host.
 
 If something is missing or older than listed: tell the person, propose how to
 install it, and **wait for a yes** before installing.
@@ -114,8 +114,11 @@ Write the value into `skein/.env` (ignored by git):
 HOST_WORKSPACE=/path/on/the/daemon/host/to/skein
 ```
 
-`docker compose` reads `.env` from the directory you run it in — the top of
-`skein/` — so both the local stack and the harnesses pick it up.
+The harnesses read `.env` from the directory you run them in — the top of
+`skein/`. The local stack commands below pass `--env-file versions.env`, and an
+explicit `--env-file` turns off the automatic load of `.env`: when you have
+created `.env` (for `HOST_WORKSPACE`, `OLLAMA_URL`, VAPID keys), add it as a
+second file: `--env-file versions.env --env-file .env`.
 
 ---
 
@@ -160,22 +163,38 @@ intended. `git status` in `skein/` must not list `projects/`.
 
 ## 5. Bring up the local stack
 
+If an older local stack is still running (compose project `skein`, from the
+earlier version of these files), stop it first or it keeps ports 8080, 3900 and
+5173: check that it is the local stack and not a production installation
+(`docker compose -p skein ps`), then `docker compose -p skein stop` (no `-v`).
+
 From the top of `skein/`:
 
 ```bash
-docker compose -f docker-compose.local.yml up -d --build
+docker compose --env-file versions.env -f docker-compose.local.yml \
+  -f docker-compose.local.build.yml up -d --build
 ```
 
-The first build takes a while (three images plus a custom Postgres image built
-from `projects/skein-api/infra/postgres`). The compose project is named
-`skein`; it starts Postgres 18 (pgvector), Redis 7, NATS, Garage (the S3 store),
-skein-api, skein-web, skein-frontend (nginx) and
-skein-frontend-dev (Vite with hot reload).
+This is the development stack: the build overlay (`docker-compose.local.build.yml`)
+builds the three services from `projects/`, and the images are named
+`skein-*:local-dev`, so the stack runs what you just built and a released image
+is never picked up by mistake. To run the published images without any sources,
+use `docker-compose.local.yml` alone (see the Quick start of the README).
+
+The first build takes a while (three images; Postgres is the stock pgvector
+image). The compose project is named `skein-local`; it starts Postgres 18
+(pgvector), Valkey (Redis-compatible), NATS, Garage (the S3 store), skein-api, skein-web,
+skein-frontend (nginx) and skein-frontend-dev (Vite with hot reload, from the
+overlay). If you had a local stack from an earlier version of these files, its
+data lives in the volumes `skein_postgres-data` and `skein_garage-data` of the
+old project name `skein`. The new project starts with an empty database and
+empty attachments; the old data is not carried over. Remove the two old volumes
+when you no longer need them.
 
 How to tell it is up:
 
 ```bash
-docker compose -f docker-compose.local.yml ps    # postgres, redis, garage, skein-api, skein-web, skein-frontend: healthy
+docker compose --env-file versions.env -f docker-compose.local.yml -f docker-compose.local.build.yml ps    # postgres, redis, garage, skein-api, skein-web, skein-frontend: healthy
 curl -fsS http://localhost:8080/healthz           # nginx of skein-frontend
 curl -fsS http://localhost:8080/version.json
 ```
@@ -207,8 +226,8 @@ Search: `OLLAMA_URL` defaults to a deliberately non-existent host, so search
 runs full-text only. That is expected; set `OLLAMA_URL` in `skein/.env` if the
 person has an embedding server.
 
-Stop: `docker compose -f docker-compose.local.yml down`. Add `-v` only if the
-person agrees to lose the local data (database, attachments).
+Stop: `docker compose --env-file versions.env -f docker-compose.local.yml -f docker-compose.local.build.yml down`.
+Add `-v` only if the person agrees to lose the local data (database, attachments).
 
 ---
 

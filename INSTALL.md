@@ -47,7 +47,7 @@ What gets installed:
 | skein-web | `ghcr.io/tryskein/skein-web` | sessions, login, live updates, proxy to skein-api |
 | skein-api | `ghcr.io/tryskein/skein-api` | business logic, REST, MCP; applies database migrations on start |
 | PostgreSQL 18 | stock `pgvector/pgvector:pg18` image; the compose file creates the `pg_trgm` and `vector` extensions on the first start | all data |
-| Redis | stock image | sessions and cookie-encryption keys |
+| Redis-compatible store (Valkey) | stock image | sessions and cookie-encryption keys |
 | NATS | stock image | live-update bus |
 | S3-compatible storage | one bundled single-node store (Garage by default, SeaweedFS or RustFS as alternatives; stock images) or an external service | attachments |
 | Ollama (optional) | a server you or the person already run, outside this compose file | embeddings for semantic search |
@@ -105,7 +105,7 @@ example files, and keep the guarantees listed in their comments.
 | Service | Requirements |
 |---|---|
 | PostgreSQL | The extensions `pg_trgm` and `vector`, created in the application database by a privileged role before the first start (the application role cannot `CREATE EXTENSION`). Encoding UTF8 and a **non-C locale, all four fields**: provider `builtin`, builtin locale `C.UTF-8`, `lc-collate` `C.UTF-8` and `lc-ctype` `C.UTF-8`. A partial setup (a locale provider without `lc-ctype`) looks right but still breaks non-ASCII search and duplicate detection; the locale cannot be changed without a dump and restore. [DEPLOYMENT-NOTES.md](DEPLOYMENT-NOTES.md) section 1 has the reasoning, a CloudNativePG snippet and the check query; run the check of section 7 point 3 against the real database. The compose file uses PostgreSQL 18 with pgvector. Size the server so that `DATABASE_MAX_CONNS` x (replicas + 1) of skein-api fits `max_connections`. |
-| Redis | **Persistent** (append-only file or equivalent). It holds the browser sessions and the cookie-encryption keys of skein-web; a Redis that starts empty signs everybody out. Losing it loses no business data. Valkey and other compatible servers work to the extent that they accept the `redis://` URL form; only Redis is guaranteed. |
+| Redis or Valkey | **Persistent** (append-only file or equivalent). It holds the browser sessions and the cookie-encryption keys of skein-web; a Redis that starts empty signs everybody out. Losing it loses no business data. The bundled Compose stack and the Kubernetes example ship Valkey, which is what we test with; Redis works too. Any other Redis-compatible server needs the `redis://` URL form and persistence, without a guarantee. |
 | NATS | NATS Core, one node is enough. No JetStream, no volume. It carries change notifications; durability is in PostgreSQL. Restrict who can connect. |
 | Object storage | An S3-compatible service reachable by the pods **and by the people's browsers**: the browser uploads and downloads directly with presigned links. It must support **path-style** addressing, presigned POST and GET, and CORS on the bucket. `S3_PUBLIC_URL` must be an address the browser can open and must be `https` when the UI is. The service in front of it (ingress, load balancer) must pass the `Host` header unchanged, because the signature covers it, and must accept request bodies up to `SKEIN_ATTACHMENT_MAX_SIZE_BYTES` (500 MB by default) without buffering them to a small limit. skein-api sets the bucket CORS rule itself at start from `S3_CORS_ALLOWED_ORIGINS` (in Compose the default is the public address; in the Kubernetes example the ConfigMap sets it), so its key needs the right to do that, or you set the rule by hand and set the variable empty. Create the bucket and give the key read and write on it, or give the key the right to create it; if `S3_URL` is set and the store is unreachable or the key is wrong, skein-api exits at start. The variables are listed in the skein-api reference and explained in group F below. Garage is the single-node store the Compose installation bundles and tests; any service that meets the points above will do. |
 
@@ -513,13 +513,16 @@ Variables (skein-api):
 - `S3_REGION` — default `us-east-1`, which is also the region of the bundled
   Garage (RustFS is given the same value); set it only for an external S3 that insists on another region.
 - `S3_CORS_ALLOWED_ORIGINS` — the browser origins skein-api sets the bucket's
-  CORS rule for at startup; default `SKEIN_AGENT_PUBLIC_URL`. Garage and RustFS
+  CORS rule for at startup. skein-api itself has no default: with the variable
+  unset it leaves the bucket's CORS alone. The Compose file fills it with
+  `SKEIN_AGENT_PUBLIC_URL` when you do not set it, and the Kubernetes example
+  sets it in the ConfigMap. Garage and RustFS
   do not allow cross-origin browser requests by themselves, so uploads depend on
   this rule (SeaweedFS answers any origin by default; skein-api still sets the
   rule). The rule replaces the bucket's whole CORS configuration at every start;
   to keep a configuration you manage yourself (an external bucket), set the
-  variable empty (`S3_CORS_ALLOWED_ORIGINS=`) — only an unset variable falls back
-  to `SKEIN_AGENT_PUBLIC_URL`. Do not set RustFS's own `RUSTFS_CORS_ALLOWED_ORIGINS`: it does not
+  variable empty (`S3_CORS_ALLOWED_ORIGINS=`) — in Compose only an unset variable
+  falls back to `SKEIN_AGENT_PUBLIC_URL`. Do not set RustFS's own `RUSTFS_CORS_ALLOWED_ORIGINS`: it does not
   expose the file name header to the browser.
   Set it only if the UI is served from a different origin.
 - `SKEIN_ATTACHMENT_MAX_SIZE_BYTES` — per-file cap, default 500 MB. Ask whether
@@ -765,8 +768,9 @@ The service names below are those of the compose file: `skein-api`, `skein-web`,
    installation has a personal and a common space), create an issue in it, open it in a second
    browser tab and add a comment — the other tab should update without reload
    (that proves NATS → skein-web → browser). If attachments are on, upload a
-   small file and download it again. Delete the test project afterwards, or
-   ask the person whether to keep it.
+   small file and download it again. Archive the test project afterwards (Skein
+   archives projects; it does not delete them), or ask the person whether to
+   keep it.
 6. **MCP:** in the UI, create an API key (settings → API keys; the page shows a
    ready-made `.mcp.json` snippet). Then:
 

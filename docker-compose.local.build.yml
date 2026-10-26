@@ -1,0 +1,88 @@
+# docker-compose.local.build.yml — development add-on to docker-compose.local.yml.
+#
+# Builds the three services from the sibling repositories in projects/
+# (projects/skein-api, projects/skein-web, projects/skein-frontend) instead of
+# pulling the published images, and adds a Vite dev server with hot reload.
+# Use it only to change or review the code; to just run Skein, use
+# docker-compose.local.yml alone.
+#
+#   docker compose --env-file versions.env -f docker-compose.local.yml \
+#     -f docker-compose.local.build.yml up -d --build
+#
+# The locally built images get their own names (skein-*:local-dev) and
+# `pull_policy: build`, so the stack runs what you just built and can never
+# pick up (or be mistaken for) a released image of the same name. Still pass
+# --env-file versions.env: the base file requires SKEIN_VERSION to resolve its
+# image names, even though this overlay replaces them.
+
+services:
+  skein-api:
+    image: skein-api:local-dev
+    pull_policy: build
+    build:
+      context: ./projects/skein-api
+      dockerfile: Dockerfile
+
+  skein-web:
+    image: skein-web:local-dev
+    pull_policy: build
+    build:
+      context: ./projects/skein-web
+      dockerfile: Dockerfile
+
+  skein-frontend:
+    image: skein-frontend:local-dev
+    pull_policy: build
+    build:
+      context: ./projects/skein-frontend
+      args:
+        # APP_VERSION → public/version.json inside the bundle. SPA polls
+        # /version.json every 60s and surfaces an "update available" banner
+        # when the deployed version diverges from the one loaded at page
+        # start. Local builds tag as "dev".
+        APP_VERSION: "${APP_VERSION:-dev}"
+
+  # ------------------ skein-frontend-dev (Vite dev server) ------------------
+  # OPTIONAL dev-mode container: runs `vite dev` against bind-mounted
+  # source so the SPA gets hot-module reload as you edit src/. The
+  # nginx image of the stack (skein-frontend, port 8080)
+  # keeps working independently — you choose:
+  #
+  #   http://localhost:5173   → vite dev with HMR (this container)
+  #   http://localhost:8080   → skein-frontend nginx with the bundle
+  #                              built into the image
+  #
+  # Vite proxies /api/* and /hub to skein-web internally so cookie auth
+  # and SignalR work the same way as in production. node_modules lives
+  # in a named volume to isolate it from any host-installed copy
+  # (which could be a wrong arch when developing on macOS/Windows).
+  #
+  # CHOKIDAR_USEPOLLING is ON because bind mounts on WSL2/Docker Desktop
+  # do NOT propagate inotify events reliably; polling is the standard
+  # workaround and the perf cost is negligible for a frontend tree this size.
+  skein-frontend-dev:
+    image: node:22-alpine
+    working_dir: /app
+    command: sh -c "npm install --no-audit --no-fund && npm run dev -- --host 0.0.0.0 --port 5173"
+    volumes:
+      # HOST_WORKSPACE is resolved on the docker DAEMON side, not in this
+      # compose CLI's working dir — the daemon may live in a different mount
+      # namespace (Docker Desktop on WSL2, Codespaces dind, …). Put it in .env
+      # at the repo root and pass that file as a second --env-file; default
+      # falls back to ./ for the straight-host case.
+      - ${HOST_WORKSPACE:-./}/projects/skein-frontend:/app
+      - skein-frontend-node_modules:/app/node_modules
+    environment:
+      VITE_PROXY_TARGET: http://skein-web:8080
+      CHOKIDAR_USEPOLLING: "true"
+      NODE_ENV: development
+    ports:
+      # Loopback only.
+      - "127.0.0.1:5173:5173"
+    depends_on:
+      skein-web:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  skein-frontend-node_modules:

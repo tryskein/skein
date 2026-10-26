@@ -5,4 +5,5 @@
 services:
   garage:
     ports:
-      - "3900:3900"
+      # Loopback only: the stack has a known S3 key.
+      - "127.0.0.1:3900:3900"

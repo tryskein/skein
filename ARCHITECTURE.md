@@ -252,23 +252,28 @@ skein/                    Compose files, test harnesses, release and project doc
     └── skein-frontend/   React SPA + nginx image
 ```
 
-The Compose files in `skein/` build the images straight from those working
-trees (`build: context: ./projects/skein-api` and so on). The integration and
+The development overlay `docker-compose.local.build.yml` builds the images
+straight from those working trees (`build: context: ./projects/skein-api` and so
+on); the test and end-to-end stacks build from them too. The integration and
 end-to-end harnesses live in [`scripts/`](scripts/).
 
 ### Docker Compose
 
 [`docker-compose.local.yml`](docker-compose.local.yml) runs the whole stack:
-PostgreSQL, Redis, NATS, Garage (S3), `skein-api`, `skein-web` and `skein-frontend`.
+PostgreSQL, Valkey (Redis-compatible), NATS, Garage (S3), `skein-api`, `skein-web` and `skein-frontend`.
 
 ```bash
-docker compose -f docker-compose.local.yml up -d --build
+docker compose --env-file versions.env -f docker-compose.local.yml up -d
 ```
 
-The application is reached through `skein-frontend` on host port 8080; `skein-web`
-and `skein-api` have no host ports. Garage's S3 port is also published to the host so that
-browsers can follow presigned URLs, and a Vite dev-server service is available
-for frontend development. Ollama, Keycloak and SMTP are not part of the stack
+It starts the published images of the release pinned in `versions.env`; adding
+`-f docker-compose.local.build.yml` builds them from `projects/` instead and adds a
+Vite dev-server service for frontend development.
+
+The application is reached through `skein-frontend` on host port 8080;
+`skein-web` and `skein-api` have no host ports. Garage's S3 port is also
+published to the host so that browsers can follow presigned URLs. Both ports
+are bound to `127.0.0.1`. Ollama, Keycloak and SMTP are not part of the stack
 and are configured as external addresses.
 
 ### Kubernetes

@@ -42,8 +42,29 @@ three service repositories, which are cloned into `projects/` of this one.
 
 ## Quick start
 
-Try Skein on your machine before you deploy anything. You need Git and Docker
-with the Compose v2 plugin. Ports 8080, 3900 and 5173 must be free.
+### Install from the registry
+
+You need Docker with Compose 2.23.1 or newer and curl. Ports 8080 and 3900 must
+be free.
+
+```bash
+mkdir -p skein/garage && cd skein
+B=https://raw.githubusercontent.com/tryskein/skein/main
+curl -fsSLO $B/docker-compose.local.yml
+curl -fsSLO $B/versions.env
+curl -fsSL $B/garage/garage.dev.yml -o garage/garage.dev.yml
+curl -fsSL $B/garage/ports-local.yml -o garage/ports-local.yml
+docker compose --env-file versions.env -f docker-compose.local.yml up -d
+```
+
+Open <http://localhost:8080> and log in as `admin@test.com` with the password
+`qwerty12`. These are local values: the stack listens on `127.0.0.1` only, and
+you must never use them on a server.
+
+### Build from source
+
+You need the same Git and Docker (Compose 2.23.1 or newer); ports 8080, 3900
+and 5173 must be free.
 
 ```bash
 git clone https://github.com/tryskein/skein.git
@@ -51,23 +72,35 @@ cd skein
 for r in skein-api skein-web skein-frontend; do
   git clone https://github.com/tryskein/$r.git projects/$r
 done
-docker compose -f docker-compose.local.yml up -d --build
+docker compose --env-file versions.env -f docker-compose.local.yml \
+  -f docker-compose.local.build.yml up -d --build
 ```
 
-The first build takes a while: it builds the three service images and a
-Postgres image. When the stack is up, open <http://localhost:8080> and log in
-as `admin@test.com` with the password `qwerty12`. These are local development
-values; never use them on a server.
+This also starts a Vite dev server with hot reload on
+<http://localhost:5173>. More in [Development](#development).
 
-Agents connect through MCP at `http://localhost:8080/mcp` with the header
-`X-Skein-Api-Key: ska_…`. Create the key in the UI.
+### On a server
 
-Web Push notifications are off in the local stack until you set
-`SKEIN_VAPID_PUBLIC` and `SKEIN_VAPID_PRIVATE` in `.env` (see
-[`.env.example`](.env.example) for how to generate the pair).
+See [Deploy on your server](#deploy-on-your-server).
 
-Stop the stack with `docker compose -f docker-compose.local.yml down`. Add `-v`
-only if you are happy to lose the local database and attachments.
+### On Kubernetes
+
+See [Kubernetes](#kubernetes).
+
+### Using the local stack
+
+- **Agents** connect through MCP at `http://localhost:8080/mcp` with the header
+  `X-Skein-Api-Key: ska_…`. Create the key in the UI.
+- **Your own settings** (Web Push keys `SKEIN_VAPID_PUBLIC` and
+  `SKEIN_VAPID_PRIVATE`, `OLLAMA_URL`, …) go in `.env`, see
+  [`.env.example`](.env.example). Pass it as a second file:
+  `--env-file versions.env --env-file .env`.
+- **Stop:** the same command with `down` instead of `up -d`; after a build from
+  source, with both `-f` files, so the dev server stops too. Add `-v` to also
+  delete the local database and attachments.
+- **Update:** download the four files again (`versions.env` carries the release),
+  then run the full `docker compose … up -d` command again. Read the release
+  notes first, as for any [upgrade](#upgrading).
 
 ## Deploy on your server
 
@@ -95,7 +128,7 @@ Pin the version: set `SKEIN_VERSION` in `.env` to a Skein release such as
 ### Kubernetes
 
 Example manifests for the three application services, with a runbook for the
-PostgreSQL, Redis, NATS and S3-compatible storage they depend on, are in
+PostgreSQL, Valkey (Redis-compatible), NATS and S3-compatible storage they depend on, are in
 [`deploy/kubernetes/`](deploy/kubernetes/). The step-by-step guide is Target B
 in [INSTALL.md](INSTALL.md). Give it to your agent, as for Docker Compose.
 
@@ -169,9 +202,12 @@ done
 Each repository is versioned on its own and has its own `main` branch.
 Commands below run from the top of `skein/`.
 
-**Local stack.** `docker compose -f docker-compose.local.yml up -d --build`, as
-in [Quick start](#quick-start). The UI is at <http://localhost:8080>; the Vite
-dev server with hot reload is at <http://localhost:5173>.
+**Local stack.** Build it from the three repositories in `projects/` with the
+overlay, as in [Build from source](#build-from-source):
+`docker compose --env-file versions.env -f docker-compose.local.yml -f docker-compose.local.build.yml up -d --build`.
+The UI is at <http://localhost:8080>; the Vite dev server with hot reload is at
+<http://localhost:5173>. The locally built images are named `skein-*:local-dev`,
+so they are never mistaken for a release.
 
 **Unit tests**, per repository. The exact commands and pitfalls are in the
 `Testing` section of each repository's `CLAUDE.md`. The plain ones:
