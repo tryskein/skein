@@ -1,4 +1,6 @@
-# EXAMPLE Redis for trying Skein out.
+# EXAMPLE Redis-compatible store (Valkey, the BSD-licensed Redis fork) for
+# trying Skein out. The Service and Secret keep the name `redis`: skein-web reads
+# REDIS_URL and speaks the Redis protocol.
 #
 # NOT FOR PRODUCTION without more work: one instance, one volume, no TLS, no
 # replica or failover. Keep what the application depends on:
@@ -53,11 +55,11 @@ spec:
       containers:
         - name: redis
           # The image of docker-compose.production.yml, by digest.
-          image: redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
+          image: valkey/valkey:9.1.2-alpine@sha256:48332870af354a799964c0012ae1194a0bf2bf894eb508f945810596dc2d8d11
           command:
             - sh
             - -c
-            - exec redis-server --appendonly yes --dir /data --requirepass "$REDIS_PASSWORD"
+            - exec valkey-server --appendonly yes --dir /data --requirepass "$REDIS_PASSWORD"
           env:
             - name: REDIS_PASSWORD
               valueFrom:
@@ -81,12 +83,12 @@ spec:
               mountPath: /data
           readinessProbe:
             exec:
-              command: ["sh", "-c", "redis-cli -a \"$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
+              command: ["sh", "-c", "valkey-cli -a \"$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
             periodSeconds: 5
             timeoutSeconds: 3
           livenessProbe:
             exec:
-              command: ["sh", "-c", "redis-cli -a \"$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
+              command: ["sh", "-c", "valkey-cli -a \"$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
             periodSeconds: 10
             timeoutSeconds: 3
             failureThreshold: 6

@@ -14,13 +14,13 @@
 # go to an external S3 service (S3_URL and friends in `.env`). Pick at most one
 # store profile in COMPOSE_PROFILES: they all publish SKEIN_S3_PORT.
 #
-# How it differs from docker-compose.local.yml:
-#   - images come from the registry, pinned to one Skein release
-#     (SKEIN_VERSION); nothing is built here;
+# How it differs from docker-compose.local.yml (which also runs the published
+# images, for trying Skein out on one machine):
 #   - every secret, address and choice comes from `.env` (see `.env.example`);
 #     there are no development values in this file;
 #   - skein-frontend is published on 127.0.0.1 by default, for a TLS reverse
-#     proxy on the same host; local publishes it on all interfaces, plain HTTP;
+#     proxy on the same host; local publishes it on 127.0.0.1 too, plain HTTP,
+#     with a known admin password;
 #   - Redis keeps its data (AOF): it holds sessions and cookie keys, and
 #     losing it signs everyone out;
 #   - the Docker network has a fixed subnet, so skein-web can be told which
@@ -81,16 +81,18 @@ services:
     restart: unless-stopped
     logging: *logging
 
-  # ------------------ Redis ------------------
+  # ------------------ Valkey (Redis-compatible) ------------------
+  # Valkey is the BSD-licensed Redis fork; skein-web speaks the Redis protocol,
+  # so the service keeps the name `redis` and the REDIS_URL variable.
   # Sessions, the cookie-encryption key ring, the login throttle and the
   # SignalR backplane. AOF persistence: a restart must not sign everyone out.
   redis:
-    image: redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
-    command: ["redis-server", "--appendonly", "yes"]
+    image: valkey/valkey:9.1.2-alpine@sha256:48332870af354a799964c0012ae1194a0bf2bf894eb508f945810596dc2d8d11
+    command: ["valkey-server", "--appendonly", "yes"]
     volumes:
       - redis-data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "valkey-cli", "ping"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -143,10 +145,10 @@ services:
   # .env are missing or malformed. Without it Garage restarts forever on a bad
   # GARAGE_RPC_SECRET while skein-api, which only optionally waits for the store,
   # starts with attachments off, and `up` reports success. The Garage image has
-  # no shell, so the check runs in the (already pinned) Redis image.
+  # no shell, so the check runs in the (already pinned) Valkey image.
   garage-settings-check:
     profiles: ["garage"]
-    image: redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
+    image: valkey/valkey:9.1.2-alpine@sha256:48332870af354a799964c0012ae1194a0bf2bf894eb508f945810596dc2d8d11
     entrypoint: ["/bin/sh", "-c"]
     environment:
       GARAGE_RPC_SECRET: ${GARAGE_RPC_SECRET:-}
