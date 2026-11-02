@@ -8,7 +8,7 @@ Skein lives in four repositories under https://github.com/tryskein:
 
 | Repository | What it is |
 |---|---|
-| https://github.com/tryskein/skein | the top of the workspace: README, CLAUDE.md, LICENSE, CONTRIBUTING.md, ARCHITECTURE.md, RELEASING.md, compose files, test harnesses |
+| https://github.com/tryskein/skein | the top of the workspace: README, AGENTS.md, LICENSE, CONTRIBUTING.md, ARCHITECTURE.md, RELEASING.md, compose files, test harnesses |
 | https://github.com/tryskein/skein-api | backend (Go): REST API and MCP server |
 | https://github.com/tryskein/skein-web | BFF (.NET): sessions, proxy, live updates |
 | https://github.com/tryskein/skein-frontend | web UI (React, served by nginx) |
@@ -17,7 +17,7 @@ The finished workspace must look like this (the reference tree):
 
 ```
 skein/
-├── README.md, CLAUDE.md, LICENSE, CONTRIBUTING.md, ARCHITECTURE.md, RELEASING.md, …
+├── README.md, AGENTS.md, LICENSE, CONTRIBUTING.md, ARCHITECTURE.md, RELEASING.md, …
 ├── docker-compose.*.yml
 ├── scripts/
 └── projects/
@@ -238,7 +238,7 @@ Run each level once and report the real result of each.
 ### Unit tests, per service
 
 The exact commands, prerequisites and pitfalls are in the `## Testing`
-section of each service's `CLAUDE.md` and in its
+section of each service's `AGENTS.md` and in its
 `README.md`. Read those; do not reconstruct commands from the code. The plain
 ones:
 
@@ -248,7 +248,7 @@ ones:
 (cd projects/skein-frontend && npm ci && npm test)
 ```
 
-skein-api also has Python runner tests; their command is in its `CLAUDE.md`.
+skein-api also has Python runner tests; their command is in its `AGENTS.md`.
 
 ### Integration tests (skein-api against a real Postgres)
 
@@ -314,8 +314,8 @@ Tell them, briefly:
 
 Explain how to work in the workspace:
 
-- **Which instructions an agent reads.** `skein/CLAUDE.md` for the workspace;
-  `projects/<service>/CLAUDE.md` for work inside a service — it holds that
+- **Which instructions an agent reads.** `skein/AGENTS.md` for the workspace;
+  `projects/<service>/AGENTS.md` for work inside a service — it holds that
   service's conventions and its `## Testing` section.
 - **Each repository is independent:** its own branch, its own commits, its own
   pull request. A change that spans services is several pull requests.

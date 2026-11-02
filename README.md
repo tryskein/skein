@@ -174,14 +174,14 @@ manifests.
 ## Development
 
 Skein is split across four repositories. This one is the top level of the
-workspace: it holds this README, `CLAUDE.md`, the license, compose files and
+workspace: it holds this README, `AGENTS.md`, the license, compose files and
 test harnesses. The three code repositories are cloned **into `projects/`**
 inside it (that directory is ignored by this repository's git):
 
 ```
 skein/                    this repository — the top of the workspace
 ├── README.md
-├── CLAUDE.md             entry point for coding agents; links to the CLAUDE.md of each service
+├── AGENTS.md             entry point for coding agents; links to the AGENTS.md of each service
 ├── LICENSE, CONTRIBUTING.md, ARCHITECTURE.md, RELEASING.md, …
 ├── docker-compose.*.yml
 ├── scripts/              integration and e2e harnesses
@@ -210,7 +210,7 @@ The UI is at <http://localhost:8080>; the Vite dev server with hot reload is at
 so they are never mistaken for a release.
 
 **Unit tests**, per repository. The exact commands and pitfalls are in the
-`Testing` section of each repository's `CLAUDE.md`. The plain ones:
+`Testing` section of each repository's `AGENTS.md`. The plain ones:
 
 ```bash
 (cd projects/skein-api/src && go test -count=1 ./...)
