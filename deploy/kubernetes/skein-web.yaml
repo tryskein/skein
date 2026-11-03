@@ -1,6 +1,6 @@
 # skein-web: browser sessions, sign-in, the SignalR hub (/hub), and the reverse
-# proxy to skein-api for /api, /mcp, /agent/v1 and the OAuth metadata. The
-# Ingress sends those paths here directly (ingress.yaml).
+# proxy to skein-api for /api, /mcp, /agent/v1 and the OAuth metadata.
+# The Ingress or Gateway sends those paths here directly.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -9,17 +9,12 @@ metadata:
     app.kubernetes.io/name: skein-web
     app.kubernetes.io/part-of: skein
 spec:
-  # One replica by default, on purpose. SignalR negotiates on one request and
-  # upgrades to a WebSocket on the next; the connection exists only in the
-  # memory of the pod that answered the negotiation. Measured on a two-replica
-  # set without affinity: 8 of 12 WebSocket upgrades after a negotiate got a
-  # 404 from the other pod, which breaks the live feed.
-  # More than one replica works only with session affinity for /hub on the
-  # Ingress: the second Ingress in ingress.yaml sets it for ingress-nginx; other
-  # controllers need their own equivalent. Raise this number only with that in
-  # place. With one replica expect a short gap in the live feed on every
-  # rollout; the browser reconnects by itself.
-  replicas: 1
+  # /hub requires cookie affinity: negotiation and subsequent SignalR
+  # transport requests must reach the same replica. ingress.yaml configures
+  # ingress-nginx; ../kubernetes-cilium/ provides the Gateway API alternative.
+  # Keep affinity enabled when scaling. All replicas share Redis sessions,
+  # keys and the backplane.
+  replicas: 2
   strategy:
     type: RollingUpdate
     rollingUpdate:

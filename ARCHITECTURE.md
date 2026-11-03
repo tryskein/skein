@@ -101,7 +101,8 @@ and the "new version available" banner tracks the SPA version alone.
 ┌──────────────────────────────────────────────────────────────────────────┐
 │ Public edge: skein-frontend nginx (Compose) / cluster gateway (k8s)      │
 │   SPA static files                                                       │
-│   /api/  /hub  /mcp  /oauth2/  /.well-known/oauth-protected-resource*    │
+│   /api/  /hub  /mcp  /agent/v1  /oauth2/                                 │
+│   /.well-known/oauth-protected-resource*                                 │
 │        └──────────────────────────► skein-web                            │
 └──────────────────────────────────────┬───────────────────────────────────┘
                                        ▼ HTTP (internal)
@@ -295,9 +296,17 @@ change notifications, and durability is in PostgreSQL. Example manifests and the
 installation guide are in `deploy/kubernetes/` and
 [INSTALL.md](INSTALL.md) (Target B).
 
-The example runs one `skein-web` replica. With more than one, the SignalR hub
-(`/hub`) needs session affinity at the ingress: a connection lives only in the
-memory of the pod that handled its negotiation.
+The examples run **two replicas of each application service**. SignalR keeps
+connection state in the BFF replica that handled negotiation, so `/hub` uses
+cookie affinity at the entry point. The base configures ingress-nginx; the
+[`kubernetes-cilium/` variant](deploy/kubernetes-cilium/) uses Gateway API cookie
+`sessionPersistence`. Both route `/hub` directly to skein-web and retain
+WebSocket, SSE and Long Polling. The routing cookie is separate from the
+authentication cookie; replicas share the Redis session store, encryption keys
+and SignalR backplane. When a pod disappears, the browser establishes a new
+connection on an available replica, restores its subscriptions and refreshes
+its data. Controller prerequisites and verification are in
+[INSTALL.md](INSTALL.md#target-b--kubernetes).
 
 Ordinary releases are rolling updates. A release whose migrations change the
 meaning of existing rows requires a stop-all of `skein-api` and `skein-web`

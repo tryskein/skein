@@ -1,0 +1,50 @@
+# Requires Cilium support for HTTPRoute cookie sessionPersistence, documented
+# in the prerelease 1.21.0-pre.3; verify support in your controller version.
+# Install the experimental HTTPRoute CRD before the operator starts; see
+# INSTALL.md, Target B. Installing the CRD does not add controller support.
+# Apply this route and its Gateway in the application's namespace.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: skein
+  labels:
+    app.kubernetes.io/name: skein
+    app.kubernetes.io/part-of: skein
+spec:
+  parentRefs:
+    - name: skein
+      sectionName: https
+  hostnames: [skein.example.com]
+  rules:
+    - matches:
+        - path: {type: PathPrefix, value: /api}
+        - path: {type: PathPrefix, value: /mcp}
+        - path: {type: PathPrefix, value: /agent/v1}
+        - path: {type: PathPrefix, value: /oauth2}
+        - path: {type: PathPrefix, value: /.well-known/oauth-protected-resource}
+      # MCP and agent responses can stream for a long time.
+      timeouts:
+        request: 3600s
+      backendRefs:
+        - name: skein-web
+          port: 8080
+    - matches:
+        - path: {type: PathPrefix, value: /hub}
+      # Pin negotiation and all SignalR transports to one BFF replica.
+      # Cilium sets the cookie and updates it if that endpoint disappears.
+      # This routing cookie does not replace the application's auth cookie.
+      sessionPersistence:
+        type: Cookie
+        sessionName: skein-hub
+        cookieConfig:
+          lifetimeType: Session
+      timeouts:
+        request: 3600s
+      backendRefs:
+        - name: skein-web
+          port: 8080
+    - matches:
+        - path: {type: PathPrefix, value: /}
+      backendRefs:
+        - name: skein-frontend
+          port: 5102

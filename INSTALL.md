@@ -74,8 +74,11 @@ Example manifests are in [`deploy/kubernetes/`](deploy/kubernetes/) of
 <https://github.com/tryskein/skein>; use the copy at the tag of the release you
 install. They are plain manifests applied with `kubectl apply -k`, not a chart.
 They deploy the three application services (skein-api, skein-web,
-skein-frontend) with Services, PodDisruptionBudgets, probes, resource settings,
-a non-root security context and an Ingress. **PostgreSQL, Redis, NATS and the
+skein-frontend), **two replicas each**, with Services, PodDisruptionBudgets,
+probes, resource settings and a non-root security context. The base uses
+ingress-nginx routing; [`deploy/kubernetes-cilium/`](deploy/kubernetes-cilium/)
+replaces it with a Cilium Gateway and HTTPRoute. Both variants configure cookie
+affinity for `/hub`. **PostgreSQL, Redis, NATS and the
 object storage are separate services that the person runs or rents**; the
 manifests only take their addresses. For people who have none of the first
 three there is a minimal example in
@@ -84,21 +87,25 @@ marked in every file as not for production without more work.
 
 Everything in sections 3–5 (the interview, validating the answers, generating
 secrets) applies unchanged; only the place where the answers go is different
-(B3). Sections 6–7 are replaced by B4–B6. Do not improvise manifests: change the
+(B3). Sections 6–7 are replaced by B4–B7. Do not improvise manifests: change the
 example files, and keep the guarantees listed in their comments.
 
 **B1. Ask and check**
 
 - Which cluster, which namespace, and may you create things there. Check
   `kubectl version` and that the person's context is the intended one.
-- Which **ingress controller** (`kubectl get ingressclass`). The Ingress in the
-  example has no class; you set it (B3). If the cluster has none, installing one
+- Which **Ingress or Gateway controller** (`kubectl get ingressclass` or
+  `kubectl get gatewayclass`). Choose one routing variant: the base for
+  ingress-nginx, or `deploy/kubernetes-cilium/` for Cilium Gateway API with
+  cookie persistence support (B5; the referenced implementation is a prerelease).
+  Other controllers need equivalent `/hub` cookie affinity and streaming
+  settings. Installing or upgrading a controller
   is the person's decision.
 - A **storage class** only if the person wants the optional PostgreSQL and Redis
   examples.
 - Where PostgreSQL, Redis, NATS and S3 come from (B2).
 - The DNS name and a TLS certificate for it (section 2, points 3–4 apply; TLS
-  terminates at the Ingress), and a second public name for the object storage (B2).
+  terminates at the Ingress or Gateway), and a second public name for the object storage (B2).
 
 **B2. What the external services must provide**
 
@@ -112,6 +119,9 @@ example files, and keep the guarantees listed in their comments.
 **B3. Put the answers in the files**
 
 Work on a copy of `deploy/kubernetes/` kept in the person's own repository.
+For Cilium, also copy `deploy/kubernetes-cilium/` beside it, preserving the two
+directory names: the Cilium variant reuses the application manifests from
+`../kubernetes/`. Run the B4 commands from the `kubernetes/` directory.
 
 1. `kustomization.yaml`: set the three `newTag` values to `skein-X.Y.Z` of the
    chosen release (the tags are the same as in Target A).
@@ -126,11 +136,20 @@ Work on a copy of `deploy/kubernetes/` kept in the person's own repository.
    by an additional `secretKeyRef` entry.
 3. `secret.template.yaml` -> your `secret.yaml` with real values (section 5), or
    the same Secret `skein-secrets` created from the person's secret manager. Do
-   not commit the filled file.
-4. `ingress.yaml`: host name, TLS secret, `ingressClassName`. The annotations are
-   for ingress-nginx; with another controller, configure the equivalent settings
-   in its own terms (comments in the file say what each one is for).
-5. `skein-web.yaml`: `replicas`, see B5.
+   not commit the filled file. If using the optional dependency examples, also
+   fill `optional-dependencies/secret.yaml` from
+   `optional-dependencies/secret.template.yaml`. Do not commit that filled file
+   either.
+4. Choose the routing files. For ingress-nginx, set the host name, TLS secret and
+   `ingressClassName` on **both** Ingresses in `ingress.yaml` (the example class
+   is `nginx`). For Cilium, set `gatewayClassName`, hostname and TLS Secret in
+   `../kubernetes-cilium/gateway.yaml`, and the matching hostname in
+   `../kubernetes-cilium/httproute.yaml`.
+   Keep the TLS Secret in the application's namespace. Use only one variant.
+5. The three application Deployments start with `replicas: 2`. All skein-web
+   replicas must use the same Redis store for sessions, encryption keys and the
+   SignalR backplane, with `/hub` cookie affinity enabled on the chosen entry
+   point (B5).
 
 **B4. Apply**
 
@@ -141,8 +160,23 @@ kubectl -n <namespace> apply -f optional-dependencies/secret.yaml
 kubectl -n <namespace> apply -k optional-dependencies
 kubectl -n <namespace> apply -f secret.yaml
 kubectl -n <namespace> apply -k .
-kubectl -n <namespace> rollout status deployment/skein-api deployment/skein-web deployment/skein-frontend
+kubectl -n <namespace> rollout status deployment/skein-api &&
+kubectl -n <namespace> rollout status deployment/skein-web &&
+kubectl -n <namespace> rollout status deployment/skein-frontend
 ```
+
+For the **Cilium variant**, replace `apply -k .` above with:
+
+```bash
+kubectl -n <namespace> apply -k ../kubernetes-cilium
+```
+
+This renders the same application Deployments with a Gateway and HTTPRoute
+instead of the two Ingresses and their dedicated hub Service. If switching an
+existing installation between variants, applying the new render does not delete
+the old routing resources: plan their
+removal and the DNS change with the person. Do not leave competing routes for
+the same public address.
 
 The first start of skein-api applies all database migrations before it opens its
 port (a startup probe allows up to 10 minutes); skein-web waits for it. Several
@@ -151,35 +185,43 @@ advisory lock, so one applies them and the others see nothing to do.
 
 **B5. TLS, the client address, and replicas**
 
-- **TLS** terminates at the Ingress. The controller must send `X-Forwarded-Proto`
+- **TLS** terminates at the Ingress or Gateway. The controller must send `X-Forwarded-Proto`
   (all common ones do). skein-web uses it for the `Secure` flag of the session
   cookie and the sign-in redirect.
 - **`SKEIN_TRUSTED_PROXIES`** lists the peers whose `X-Forwarded-*` headers
-  skein-web may trust. With the example routing, the peer of skein-web is the
-  ingress controller pod, so list the **pod network** of the cluster
-  (the per-node ranges from `kubectl get nodes -o jsonpath='{.items[*].spec.podCIDR}'` lie inside it, or read it from the CNI or cloud settings;
-  `10.244.0.0/16` in the example is a common default, not a fact about their
-  cluster). Do not leave it empty: that switches off every per-IP limit (login
-  throttle and the limits on the public account routes). Because the range is
-  the whole pod network, any pod in it could forge the headers: ask the person
-  to allow connections to skein-web only from the ingress controller and
-  skein-frontend with a NetworkPolicy (needs a CNI that enforces them).
+  skein-web may trust. Identify the addresses from which its Ingress/Gateway
+  proxy connects. A proxy with a pod IP can use the relevant pod network;
+  a host-network proxy needs its node/proxy addresses instead. Do not assume
+  that the example's `10.244.0.0/16` is the right range for the person's cluster.
+  Do not leave the setting empty: that switches off every per-IP limit (login
+  throttle and the limits on the public account routes). Keep the allowlist
+  scoped to the actual proxies and restrict network access to skein-web so
+  unrelated workloads cannot forge forwarded headers. NetworkPolicy needs a
+  CNI that enforces it and rules matching the chosen proxy's networking mode.
   **Known limit:** the per-IP limits see the real visitor only if the ingress
   controller itself sees the visitor's address. Behind a cloud load balancer
   that hides it (source NAT, or no PROXY protocol or `externalTrafficPolicy:
   Local`) the controller, and so skein-web, sees the balancer, and all visitors
   count together. Warn the person if they are exposed to brute-force (guessing)
   attacks.
-- **Replicas of skein-web and `/hub`.** The SignalR hub keeps each connection in
-  the memory of the pod that answered its negotiation, so with more than one
-  skein-web replica the browser must reach the same pod for the negotiation and
-  the WebSocket upgrade. The example therefore runs **one** skein-web
-  replica. To run more, the Ingress must pin `/hub` to a pod by cookie: the
-  example does that on ingress-nginx (the `skein-hub` Ingress), and other
-  controllers need their own equivalent. Without it some of the upgrade requests get a
-  404 and the live feed breaks (measured: 8 of 12 on two replicas). The
-  same limit applies if the person routes `/hub` through skein-frontend instead
-  of straight to skein-web. skein-api and skein-frontend scale freely.
+- **Replicas of skein-web and `/hub`.** The example runs **two** replicas.
+  SignalR keeps connection state in the pod that answered negotiation, so all
+  requests of that connection must reach the same pod. Cookie affinity on
+  `/hub` provides this for WebSocket, SSE and Long Polling; no browser-client
+  change or removal of fallback transports is needed. The base configures
+  [ingress-nginx affinity](https://kubernetes.github.io/ingress-nginx/user-guide/nginx-configuration/annotations/#session-affinity)
+  on the `skein-hub` Ingress, including cookie reassignment on backend failure.
+  Its dedicated `skein-web-hub` Service selects the same BFF pods as `skein-web`;
+  it creates a separate nginx upstream to avoid the documented
+  [shared-Service affinity caveat](https://kubernetes.github.io/ingress-nginx/examples/affinity/cookie/#caveats).
+  It does not add another Deployment. The Cilium variant uses `skein-web` and
+  sets `sessionPersistence` on the `/hub` HTTPRoute rule. The entry point sets
+  the `skein-hub` routing cookie; it is
+  separate from the `skein.sid` authentication cookie. Redis shares sessions,
+  keys and messages, but does not replace connection affinity. Route `/hub`
+  directly to skein-web as the examples do: affinity to a frontend replica alone
+  does not select the BFF replica behind its nginx proxy. A disconnected tab
+  reconnects, restores its subscriptions and refreshes its data automatically.
 - **First start of an empty database.** Several skein-api replicas starting
   at once are safe for the migrations (advisory lock), but the creation of the
   first administrator can collide: one replica may exit once with
@@ -187,6 +229,29 @@ advisory lock, so one applies them and the others see nothing to do.
   (seen once with two replicas). It recovers by itself; to avoid the noise start
   with `kubectl scale deployment/skein-api --replicas=1` and scale up after the
   first sign-in.
+
+**Cilium Gateway API prerequisites**
+
+Use a Cilium version implementing cookie-based `HTTPRoute.sessionPersistence`:
+the configuration is documented in
+[Cilium 1.21.0-pre.3](https://github.com/cilium/cilium/blob/v1.21.0-pre.3/Documentation/network/servicemesh/gateway-api/session-persistence.rst).
+**That reference is a prerelease**, not a guarantee that a stable Cilium release
+supports the feature. Check support in the version the person runs before
+choosing this variant; installing experimental CRDs does not add the controller
+implementation. Installing or upgrading Cilium is a separate decision for the
+person managing the cluster. Enable Gateway API and install its
+required CRDs, including the experimental HTTPRoute CRD with `sessionPersistence`,
+before the operator starts. A field accepted by the Kubernetes API alone does
+not prove the controller implemented it.
+
+The example listens on **HTTPS/443 only** and does not provide an HTTP/80
+listener or an HTTP-to-HTTPS redirect. It uses TLS because Cilium's persistence
+cookie is Secure; it also has HttpOnly and SameSite=Strict. The `skein` Gateway, HTTPRoute, backend
+Services and TLS Secret are in the same namespace. Use the Cilium variant rather
+than changing the class of `ingress.yaml`: ingress-nginx annotations do not
+configure Cilium cookie persistence. Configure the controller's stream/idle
+timeouts to allow the long-lived `/hub`, `/mcp` and `/agent/v1` traffic; the
+HTTPRoute example sets their request timeout to one hour.
 
 **B6. Shutdown window**
 
@@ -204,8 +269,22 @@ clients reconnect; the window protects requests, not hour-long streams.
 **B7. Verify and upgrade**
 
 Run section 7 with `kubectl -n <namespace> exec deploy/skein-api -- curl ...`
-for the internal checks and the public address for the rest. The Ingress must
+for the internal checks and the public address for the rest. The Ingress or Gateway must
 send `/agent/v1` to skein-web (check 7).
+
+Confirm two Ready replicas for each application Deployment. On Cilium, check
+`kubectl -n <namespace> get gateway skein -o yaml` and
+`kubectl -n <namespace> get httproute skein -o yaml`: the Gateway must be
+Programmed and the route Accepted with ResolvedRefs, with `observedGeneration`
+matching each resource's `metadata.generation`. Conditions for an older
+generation do not confirm that the current configuration was applied.
+
+In a signed-in browser, check that `/hub` receives the `skein-hub` cookie. Open
+the same test issue in two browsers, change its title or add a comment, and
+confirm live updates without refreshing either page. During a planned BFF
+rollout, verify that the tabs reconnect and continue receiving changes without
+a reload or another sign-in. Merely seeing two Ready pods does not verify the
+live feed or cookie affinity.
 
 Upgrades: change the three `newTag` values and apply. Ordinary releases are a
 rolling update (`maxUnavailable: 0`). A release whose notes demand stopping skein-api and

@@ -1,0 +1,27 @@
+# Requires an existing Cilium GatewayClass. Set gatewayClassName to that
+# class and hostname to your public Skein hostname. The TLS Secret must
+# already exist in the same namespace where these manifests are applied.
+# HTTPS is required: Cilium's session persistence cookie is Secure.
+# This example listens on HTTPS/443 only; it does not redirect HTTP/80.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: skein
+  labels:
+    app.kubernetes.io/name: skein
+    app.kubernetes.io/part-of: skein
+spec:
+  gatewayClassName: cilium
+  listeners:
+    - name: https
+      hostname: skein.example.com
+      port: 443
+      protocol: HTTPS
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - kind: Secret
+            name: skein-tls # replace with your TLS Secret
+      allowedRoutes:
+        namespaces:
+          from: Same
