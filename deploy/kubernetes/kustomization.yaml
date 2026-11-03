@@ -4,6 +4,11 @@
 #   kubectl -n <your-namespace> apply -f secret.yaml      # your filled copy of secret.template.yaml
 #   kubectl -n <your-namespace> apply -k .
 #
+# This base uses ingress-nginx routing with cookie affinity for /hub.
+# For Cilium Gateway API, also copy the sibling ../kubernetes-cilium directory,
+# edit its Gateway and HTTPRoute, and apply `-k ../kubernetes-cilium` instead.
+# Both variants use two application replicas.
+#
 # Not in this list on purpose:
 #   - secret.template.yaml: it holds placeholders, you apply your own copy;
 #   - optional-dependencies/: a minimal PostgreSQL, Redis and NATS for trying

@@ -1,8 +1,8 @@
 # skein-frontend: nginx with the web UI bundle. It reads no environment
 # variables. Its nginx also forwards /api, /hub, /mcp, /agent/v1 and the OAuth
-# paths to the host `skein-web:8080`, so a cluster whose Ingress sends
-# everything to this Service works too; ingress.yaml routes those paths to
-# skein-web directly, which saves a hop.
+# paths to the host `skein-web:8080`. The Kubernetes routing examples send
+# backend paths directly to skein-web so /hub cookie affinity selects the
+# replica holding the SignalR connection.
 apiVersion: apps/v1
 kind: Deployment
 metadata:

@@ -99,6 +99,7 @@ jobs:
         run: |
           set -euo pipefail
           kubectl kustomize deploy/kubernetes > /dev/null
+          kubectl kustomize deploy/kubernetes-cilium > /dev/null
           kubectl kustomize deploy/kubernetes/optional-dependencies > /dev/null
 
       - name: Vet the S3 contract checker
