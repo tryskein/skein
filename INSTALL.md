@@ -432,9 +432,14 @@ apart from switching the API off, the application does not restrict that.
 - `SKEIN_PUBLIC_API_TRUSTED_PROXIES`: in `docker-compose.production.yml` it
   defaults to the compose network (`SKEIN_NETWORK_SUBNET`), the address a TLS
   proxy on the host arrives from, so `X-Forwarded-For` names the client and the
-  limit of failed authentications counts per client. If the port is ever
-  published to clients with no proxy in front, set it empty
-  (`SKEIN_PUBLIC_API_TRUSTED_PROXIES=`) so clients cannot forge the header.
+  limit of failed authentications counts per client. Two other cases:
+  - **the TLS proxy runs on another host** (then `SKEIN_BIND_ADDRESS` is not
+    `127.0.0.1`): it connects from its own address, which is not in the compose
+    network — set the variable to that address (`203.0.113.10/32`), or every
+    client shares the proxy's IP in that limit; let only the proxy host reach
+    port 5103 (firewall);
+  - **no proxy at all** in front of the published port: set it empty
+    (`SKEIN_PUBLIC_API_TRUSTED_PROXIES=`) so clients cannot forge the header.
 - Not wanted at all: `SKEIN_PUBLIC_API_ENABLED=false`, and no site for it.
 - Limits: `SKEIN_PUBLIC_API_RATE_LIMIT_PER_MINUTE` (requests per key, default
   100) and `SKEIN_PUBLIC_API_AUTH_FAILURES_PER_MINUTE` (failed authentications

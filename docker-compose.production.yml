@@ -401,8 +401,11 @@ services:
       # reaching the published port, which arrives from this compose network
       # (its gateway), so by default that network is the trusted proxy and
       # X-Forwarded-For names the client. Without a trusted proxy every client
-      # shares the proxy's IP in the limit of failed authentications. If the
-      # port is published to clients directly, with no proxy, set this EMPTY
+      # shares the proxy's IP in the limit of failed authentications. A TLS
+      # proxy on ANOTHER host (SKEIN_BIND_ADDRESS not 127.0.0.1) connects from
+      # its own address: set this to that address, e.g. 203.0.113.10/32, and
+      # let only that host reach the port. If the port is published to clients
+      # directly, with no proxy, set this EMPTY
       # (SKEIN_PUBLIC_API_TRUSTED_PROXIES=) so a client cannot forge the header.
       SKEIN_PUBLIC_API_TRUSTED_PROXIES: ${SKEIN_PUBLIC_API_TRUSTED_PROXIES-${SKEIN_NETWORK_SUBNET:-172.29.88.0/24}}
       # API key lifetimes (all keys, REST and MCP).

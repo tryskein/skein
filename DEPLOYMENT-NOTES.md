@@ -853,7 +853,9 @@ header.
 
 **How to do it:** `docker-compose.production.yml` defaults it to the compose
 network (`SKEIN_NETWORK_SUBNET`), which is where a proxy on the host arrives
-from; set it empty if the port is published to clients with no proxy in front.
+from. A proxy on another host connects from its own address, outside that
+network: set the variable to that address (`203.0.113.10/32`). Set it empty if
+the port is published to clients with no proxy in front.
 The Kubernetes example sets the pod network of the ingress controller in
 `configmap.yaml`; read the real range from your cluster (with Cilium Gateway,
 the address Cilium's Envoy connects from).
