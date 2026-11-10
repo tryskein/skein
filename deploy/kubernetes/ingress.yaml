@@ -6,7 +6,7 @@
 #
 # WHAT YOU SET
 #   - ingressClassName: the class of YOUR ingress-nginx controller (kubectl get
-#     ingressclass). Both Ingresses use `nginx` below; change both if needed.
+#     ingressclass). All three Ingresses use `nginx` below; change every one if needed.
 #   - host: the public host name (the same as in SKEIN_AGENT_PUBLIC_URL).
 #   - public API host: a second host name for the public REST API (the same as
 #     in SKEIN_PUBLIC_API_URL). The TLS certificate must cover it. To keep the
