@@ -55,9 +55,11 @@ The primary backend. Go with `chi`, `pgx/v5` + `pgxpool`, `golang-migrate`,
   tokens), RFC 9728 protected-resource metadata under `/.well-known/` (only when
   authorization servers are configured), and `/healthz`, `/ready`, `/metrics`.
   For one transitional release the main port also accepts the old prefix
-  `/api/v1` for the internal API, so `skein-api` and `skein-web` can be rolled
-  out in either order; the release after it removes it
-  ([DEPLOYMENT-NOTES §4](DEPLOYMENT-NOTES.md)).
+  `/api/v1` for the internal API, so old and new `skein-web` both work against
+  it and the UI has no downtime during the rollout. `skein-api` is rolled out
+  before or together with `skein-web`: a new `skein-web` does not become ready
+  against an old `skein-api`. The release after it removes the old prefix
+  ([DEPLOYMENT-NOTES §4.2](DEPLOYMENT-NOTES.md)).
 - **Public REST API.** A second listener on its own port (5103 by default; on
   by default, switched off by a setting) serves `/api/v1` and only that:
   authenticated by an API key, with the key's permissions, scope and expiry
