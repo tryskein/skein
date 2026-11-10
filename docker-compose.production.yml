@@ -7,8 +7,9 @@
 #   skein-web      projects/skein-web/docs/env-reference.md
 #   skein-frontend projects/skein-frontend/docs/env-reference.md
 #
-# What it runs: skein-frontend (nginx, the only entry point), skein-web,
-# skein-api, PostgreSQL 18 with pgvector, Redis, NATS and — under one of the
+# What it runs: skein-frontend (nginx, the entry point of the web UI, MCP and
+# agents), skein-web, skein-api (also serving the public REST API on a port of
+# its own), PostgreSQL 18 with pgvector, Redis, NATS and — under one of the
 # store profiles `garage` (the default), `seaweedfs` or `rustfs` — a bundled
 # single-node S3 store for attachments. Without a store profile the attachments
 # go to an external S3 service (S3_URL and friends in `.env`). Pick at most one
@@ -18,9 +19,9 @@
 # images, for trying Skein out on one machine):
 #   - every secret, address and choice comes from `.env` (see `.env.example`);
 #     there are no development values in this file;
-#   - skein-frontend is published on 127.0.0.1 by default, for a TLS reverse
-#     proxy on the same host; local publishes it on 127.0.0.1 too, plain HTTP,
-#     with a known admin password;
+#   - skein-frontend and the public REST API port of skein-api are published
+#     on 127.0.0.1 by default, for a TLS reverse proxy on the same host; local
+#     publishes them on 127.0.0.1 too, plain HTTP, with a known admin password;
 #   - Redis keeps its data (AOF): it holds sessions and cookie keys, and
 #     losing it signs everyone out;
 #   - the Docker network has a fixed subnet, so skein-web can be told which
@@ -295,8 +296,12 @@ services:
     logging: *logging
 
   # ------------------ skein-api (Go) ------------------
-  # Business logic, REST and MCP. Applies database migrations before it opens
-  # its port, so the first start takes longer. Internal: never published.
+  # Business logic, the internal REST API of the web UI (/ui/v1) and MCP.
+  # Applies database migrations before it opens its ports, so the first start
+  # takes longer. Its main port (5100) is internal and never published. The
+  # public REST API (/api/v1, authenticated by an API key) is a separate server
+  # on SKEIN_PUBLIC_API_PORT (default 5103), published on SKEIN_BIND_ADDRESS
+  # for the TLS reverse proxy, on a host name of its own (INSTALL.md).
   # Every variable below is described in skein-api's env-reference.md.
   skein-api:
     image: ${SKEIN_REGISTRY:-ghcr.io/tryskein}/skein-api:skein-${SKEIN_VERSION:?set SKEIN_VERSION in .env}
@@ -381,6 +386,30 @@ services:
       SKEIN_VAPID_PRIVATE:
       SKEIN_VAPID_SUBJECT:
       SKEIN_PWNED_PASSWORDS_ENABLED:
+      # Public REST API. On by default; SKEIN_PUBLIC_API_ENABLED=false switches
+      # it off (the port below is then published with nothing listening).
+      # SKEIN_PUBLIC_API_URL is optional: the address clients use, e.g.
+      # https://api.skein.example.com; without it /api/v1/openapi.json has no
+      # `servers` and the API keys page says the address is not set.
+      SKEIN_PUBLIC_API_ENABLED:
+      SKEIN_PUBLIC_API_PORT:
+      SKEIN_PUBLIC_API_URL:
+      SKEIN_PUBLIC_API_RATE_LIMIT_PER_MINUTE:
+      SKEIN_PUBLIC_API_AUTH_FAILURES_PER_MINUTE:
+      SKEIN_PUBLIC_API_WRITE_TIMEOUT:
+      # The peer skein-api sees on the public port is the TLS reverse proxy
+      # reaching the published port, which arrives from this compose network
+      # (its gateway), so by default that network is the trusted proxy and
+      # X-Forwarded-For names the client. Without a trusted proxy every client
+      # shares the proxy's IP in the limit of failed authentications. If the
+      # port is published to clients directly, with no proxy, set this EMPTY
+      # (SKEIN_PUBLIC_API_TRUSTED_PROXIES=) so a client cannot forge the header.
+      SKEIN_PUBLIC_API_TRUSTED_PROXIES: ${SKEIN_PUBLIC_API_TRUSTED_PROXIES-${SKEIN_NETWORK_SUBNET:-172.29.88.0/24}}
+      # API key lifetimes (all keys, REST and MCP).
+      SKEIN_API_KEY_DEFAULT_TTL:
+      SKEIN_API_KEY_MAX_TTL:
+    ports:
+      - "${SKEIN_BIND_ADDRESS:-127.0.0.1}:${SKEIN_PUBLIC_API_PORT:-5103}:${SKEIN_PUBLIC_API_PORT:-5103}"
     depends_on:
       postgres:
         condition: service_healthy
@@ -451,8 +480,8 @@ services:
     logging: *logging
 
   # ------------------ skein-frontend (nginx + web UI) ------------------
-  # The only entry point. Serves the UI and forwards /api, /hub, /mcp and the
-  # agent paths to skein-web. Plain HTTP: put a TLS reverse proxy in front of
+  # The entry point of the web UI, MCP and agents. Serves the UI and forwards
+  # /api, /hub, /mcp and the agent paths to skein-web. Plain HTTP: put a TLS reverse proxy in front of
   # it (INSTALL.md, section 2). Reads no environment variables.
   skein-frontend:
     image: ${SKEIN_REGISTRY:-ghcr.io/tryskein}/skein-frontend:skein-${SKEIN_VERSION:?set SKEIN_VERSION in .env}

@@ -3,9 +3,9 @@
 #
 # Brings up: Postgres 18, Valkey (Redis-compatible), NATS, Garage (S3), skein-api (Go), skein-web
 # (.NET BFF — internal), skein-frontend (nginx serving the SPA and
-# reverse-proxying /api, /hub, /oauth2 to skein-web). Only skein-frontend and
-# Garage's S3 port are published, both on 127.0.0.1 — the rest sit on the
-# internal network. Nothing is built: the three services are pulled from
+# reverse-proxying /api, /hub, /oauth2 to skein-web). Only skein-frontend,
+# the public REST API port of skein-api and Garage's S3 port are published, all
+# on 127.0.0.1 — the rest sit on the internal network. Nothing is built: the three services are pulled from
 # ghcr.io/tryskein at the release pinned in versions.env.
 #
 # Needs Docker Compose v2.23.1 or newer (inline `configs: content:`).
@@ -14,6 +14,7 @@
 #   docker compose --env-file versions.env -f docker-compose.local.yml up -d
 #   curl http://localhost:8080/healthz   # → 200 ok  (nginx)
 #   open http://localhost:8080            # → React UI ("Skein")
+#   curl http://localhost:5103/api/v1/openapi.json   # → public REST API spec
 #   docker compose --env-file versions.env -f docker-compose.local.yml down
 #   (add -v to `down` only to delete the local database and attachments)
 #
@@ -209,6 +210,19 @@ services:
       # looks like the real one. Point it at your own realm via .env if you are
       # testing against a live IdP.
       SKEIN_OAUTH_AUTHORIZATION_SERVERS: ${SKEIN_OAUTH_AUTHORIZATION_SERVERS:-https://keycloak.example.com/realms/skein}
+      # Public REST API (/api/v1, authenticated by an API key): a server of
+      # its own on SKEIN_PUBLIC_API_PORT, not behind skein-web. Published on
+      # 127.0.0.1:5103 below. SKEIN_PUBLIC_API_URL is the address clients use;
+      # it becomes `servers` of /api/v1/openapi.json and is shown on the API
+      # keys page. No proxy stands in front of the port locally, so
+      # SKEIN_PUBLIC_API_TRUSTED_PROXIES stays unset. Set
+      # SKEIN_PUBLIC_API_ENABLED=false in .env to switch the server off.
+      SKEIN_PUBLIC_API_ENABLED: ${SKEIN_PUBLIC_API_ENABLED:-true}
+      SKEIN_PUBLIC_API_PORT: "5103"
+      SKEIN_PUBLIC_API_URL: ${SKEIN_PUBLIC_API_URL:-http://localhost:5103}
+    ports:
+      # Loopback only: the stack has a known admin password.
+      - "127.0.0.1:5103:5103"
     depends_on:
       postgres:
         condition: service_healthy
@@ -254,8 +268,8 @@ services:
   # ------------------ skein-web (.NET BFF) ------------------
   # Internal-only service after the May 2026 frontend split. Hosts the
   # cookie session, SignalR Hub on /hub, auth controllers under
-  # /api/auth/*, and the api-proxy middleware that forwards /api/v1/*
-  # to skein-api. skein-frontend nginx is the public entrypoint and
+  # /api/auth/*, and the api-proxy middleware that forwards the browser's
+  # /api/v1/* to skein-api's internal API on /ui/v1/*. skein-frontend nginx is the public entrypoint and
   # reverse-proxies these paths in.
   skein-web:
     image: ${SKEIN_REGISTRY:-ghcr.io/tryskein}/skein-web:skein-${SKEIN_VERSION:?set SKEIN_VERSION (run with --env-file versions.env)}

@@ -1,5 +1,6 @@
 # skein-web: browser sessions, sign-in, the SignalR hub (/hub), and the reverse
-# proxy to skein-api for /api, /mcp, /agent/v1 and the OAuth metadata.
+# proxy to skein-api for /api, /mcp, /agent/v1 and the OAuth metadata (the
+# browser's /api/v1 is forwarded to skein-api's internal API on /ui/v1).
 # The Ingress or Gateway sends those paths here directly.
 apiVersion: apps/v1
 kind: Deployment

@@ -48,3 +48,24 @@ spec:
       backendRefs:
         - name: skein-frontend
           port: 5102
+---
+# The public REST API: /api/v1 on its own host, straight to skein-api's public
+# port, not through skein-web. That port serves nothing but /api/v1.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: skein-public-api
+  labels:
+    app.kubernetes.io/name: skein
+    app.kubernetes.io/part-of: skein
+spec:
+  parentRefs:
+    - name: skein
+      sectionName: https-public-api
+  hostnames: [api.skein.example.com]
+  rules:
+    - matches:
+        - path: {type: PathPrefix, value: /api/v1}
+      backendRefs:
+        - name: skein-api
+          port: 5103

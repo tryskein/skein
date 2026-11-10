@@ -2,10 +2,12 @@
 #
 # The whole product the way a user reaches it: skein-frontend (nginx: SPA +
 # /api, /hub, /mcp → skein-web) → skein-web (.NET BFF: cookie session,
-# SignalR hub, /api/v1 proxy) → skein-api (Go: REST, migrations at start,
-# NATS outbox) + Postgres, Redis, NATS, Garage (S3). Playwright runs in the
-# `e2e-runner` container on the same network against
-# http://skein-frontend:5102.
+# SignalR hub, proxy of the browser's /api/v1 to skein-api's /ui/v1) →
+# skein-api (Go: REST, migrations at start, NATS outbox) + Postgres, Redis,
+# NATS, Garage (S3). Playwright runs in the `e2e-runner` container on the same
+# network against http://skein-frontend:5102. API clients reach the public REST
+# API the way they do in an installation: straight at skein-api's public port,
+# http://skein-api:5103, not through skein-web.
 #
 # Lifecycle is driven by scripts/e2e-test.sh (one command):
 #   network (own subnet) → up --wait (healthchecks) → e2e-runner → down -v.
@@ -109,6 +111,12 @@ services:
       S3_REGION: us-east-1
       S3_CORS_ALLOWED_ORIGINS: http://skein-frontend:5102
       SKEIN_AGENT_PUBLIC_URL: http://skein-frontend:5102
+      # Public REST API on its own port, enabled (its default). The runner
+      # reaches it by service name; the same address is `servers` of
+      # /api/v1/openapi.json and the address the API keys page shows.
+      SKEIN_PUBLIC_API_ENABLED: "true"
+      SKEIN_PUBLIC_API_PORT: "5103"
+      SKEIN_PUBLIC_API_URL: http://skein-api:5103
     depends_on:
       garage:
         condition: service_healthy
@@ -162,7 +170,12 @@ services:
     init: true
     environment:
       E2E_BASE_URL: http://skein-frontend:5102
-      E2E_READY_URLS: http://skein-api:5100/ready,http://skein-web:8080/ready
+      # Public REST API of skein-api, for scenarios that call it as an API
+      # client (Playwright `request`, not the browser). The public port serves
+      # only /api/v1/*, so its readiness is the OpenAPI document, which needs
+      # no key.
+      E2E_PUBLIC_API_URL: http://skein-api:5103
+      E2E_READY_URLS: http://skein-api:5100/ready,http://skein-web:8080/ready,http://skein-api:5103/api/v1/openapi.json
     volumes:
       # HOST_WORKSPACE is the repo path on the DOCKER DAEMON's host (root
       # .env) — bind-mount sources resolve daemon-side. Falls back to ./ for

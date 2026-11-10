@@ -1,6 +1,12 @@
 # Requires an existing Cilium GatewayClass. Set gatewayClassName to that
-# class and hostname to your public Skein hostname. The TLS Secret must
-# already exist in the same namespace where these manifests are applied.
+# class and hostname to your public Skein hostname. The second listener is the
+# public REST API on a host name of its own (the same as SKEIN_PUBLIC_API_URL
+# in ../kubernetes/configmap.yaml); remove it and the `skein-public-api`
+# HTTPRoute to keep the public API off this Gateway.
+# SKEIN_PUBLIC_API_TRUSTED_PROXIES in that ConfigMap must cover the address
+# Cilium's Envoy connects to the pods from, or every client shares one IP in
+# the limit of failed authentications. The TLS Secrets must already exist in
+# the same namespace where these manifests are applied.
 # HTTPS is required: Cilium's session persistence cookie is Secure.
 # This example listens on HTTPS/443 only; it does not redirect HTTP/80.
 apiVersion: gateway.networking.k8s.io/v1
@@ -22,6 +28,18 @@ spec:
         certificateRefs:
           - kind: Secret
             name: skein-tls # replace with your TLS Secret
+      allowedRoutes:
+        namespaces:
+          from: Same
+    - name: https-public-api
+      hostname: api.skein.example.com
+      port: 443
+      protocol: HTTPS
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - kind: Secret
+            name: skein-public-api-tls # replace with your TLS Secret
       allowedRoutes:
         namespaces:
           from: Same

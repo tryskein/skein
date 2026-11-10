@@ -1,7 +1,8 @@
 # Cilium Gateway API routing alternative. Configure the base application's
 # images, ConfigMaps and Secrets in ../kubernetes as usual, then apply this
-# directory instead. The Ingresses and their dedicated hub Service are omitted;
-# the Deployments, application Services and PodDisruptionBudgets share the base.
+# directory instead. The Ingresses (including the public API one) and their
+# dedicated hub Service are omitted; the Deployments, application Services and
+# PodDisruptionBudgets share the base.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
@@ -27,3 +28,9 @@ patches:
       kind: Ingress
       metadata:
         name: skein-hub
+  - patch: |-
+      $patch: delete
+      apiVersion: networking.k8s.io/v1
+      kind: Ingress
+      metadata:
+        name: skein-public-api
