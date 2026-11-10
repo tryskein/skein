@@ -105,7 +105,9 @@ example files, and keep the guarantees listed in their comments.
   examples.
 - Where PostgreSQL, Redis, NATS and S3 come from (B2).
 - The DNS name and a TLS certificate for it (section 2, points 3–4 apply; TLS
-  terminates at the Ingress or Gateway), and a second public name for the object storage (B2).
+  terminates at the Ingress or Gateway), a second public name for the object
+  storage (B2), and, if the public REST API will be reachable (section 3, A3),
+  a third one for it.
 
 **B2. What the external services must provide**
 
@@ -128,7 +130,9 @@ directory names: the Cilium variant reuses the application manifests from
 2. `configmap.yaml`: the public address (`SKEIN_AGENT_PUBLIC_URL`,
    `SKEIN_APP_BASE_URL`), `SKEIN_AUTH_MODE`, `S3_URL`, `S3_PUBLIC_URL`,
    `S3_BUCKET`, `S3_CORS_ALLOWED_ORIGINS` (the public address; remove the line
-   if you set the bucket's CORS rule yourself), `NATS_URL`, `SKEIN_TRUSTED_PROXIES` (B5). Any other variable of
+   if you set the bucket's CORS rule yourself), `NATS_URL`, `SKEIN_TRUSTED_PROXIES` (B5),
+   `SKEIN_PUBLIC_API_URL` (the public API host, A3) and
+   `SKEIN_PUBLIC_API_TRUSTED_PROXIES` (B5). Any other variable of
    the three references goes in as a new key of the ConfigMap of that service;
    the same rules apply as in Target A (no empty values to mean "off"). Settings
    that carry a secret (SMTP password, OIDC client secret, VAPID private key,
@@ -141,10 +145,13 @@ directory names: the Cilium variant reuses the application manifests from
    `optional-dependencies/secret.template.yaml`. Do not commit that filled file
    either.
 4. Choose the routing files. For ingress-nginx, set the host name, TLS secret and
-   `ingressClassName` on **both** Ingresses in `ingress.yaml` (the example class
-   is `nginx`). For Cilium, set `gatewayClassName`, hostname and TLS Secret in
-   `../kubernetes-cilium/gateway.yaml`, and the matching hostname in
-   `../kubernetes-cilium/httproute.yaml`.
+   `ingressClassName` on **every** Ingress in `ingress.yaml` (the example class
+   is `nginx`); the `skein-public-api` Ingress takes the public API host. For
+   Cilium, set `gatewayClassName`, the hostnames and TLS Secrets of both
+   listeners in `../kubernetes-cilium/gateway.yaml`, and the matching hostnames
+   in both routes of `../kubernetes-cilium/httproute.yaml`. If the public API
+   must not be reachable, remove its Ingress (or its listener and route) and
+   set `SKEIN_PUBLIC_API_ENABLED: "false"` in the ConfigMap.
    Keep the TLS Secret in the application's namespace. Use only one variant.
 5. The three application Deployments start with `replicas: 2`. All skein-web
    replicas must use the same Redis store for sessions, encryption keys and the
@@ -171,8 +178,8 @@ For the **Cilium variant**, replace `apply -k .` above with:
 kubectl -n <namespace> apply -k ../kubernetes-cilium
 ```
 
-This renders the same application Deployments with a Gateway and HTTPRoute
-instead of the two Ingresses and their dedicated hub Service. If switching an
+This renders the same application Deployments with a Gateway and HTTPRoutes
+instead of the Ingresses and their dedicated hub Service. If switching an
 existing installation between variants, applying the new render does not delete
 the old routing resources: plan their
 removal and the DNS change with the person. Do not leave competing routes for
@@ -204,6 +211,16 @@ advisory lock, so one applies them and the others see nothing to do.
   Local`) the controller, and so skein-web, sees the balancer, and all visitors
   count together. Warn the person if they are exposed to brute-force (guessing)
   attacks.
+- **`SKEIN_PUBLIC_API_TRUSTED_PROXIES`** is the same decision for the public
+  REST API port of skein-api: the addresses the Ingress/Gateway connects to
+  skein-api from (the example uses the same pod network as for skein-web; with
+  Cilium Gateway, the address Cilium's Envoy connects from). Empty behind an
+  Ingress means every client shares the controller's IP in the limit of failed
+  authentications, so a burst of bad keys from anyone shuts out the others for
+  the rest of the minute. Restrict network access to port 5103 to the
+  controller, as for skein-web. The request limit per key is counted in each
+  replica: with two replicas a key gets up to twice
+  `SKEIN_PUBLIC_API_RATE_LIMIT_PER_MINUTE`.
 - **Replicas of skein-web and `/hub`.** The example runs **two** replicas.
   SignalR keeps connection state in the pod that answered negotiation, so all
   requests of that connection must reach the same pod. Cookie affinity on
@@ -272,9 +289,11 @@ Run section 7 with `kubectl -n <namespace> exec deploy/skein-api -- curl ...`
 for the internal checks and the public address for the rest. The Ingress or Gateway must
 send `/agent/v1` to skein-web (check 7).
 
-Confirm two Ready replicas for each application Deployment. On Cilium, check
+Confirm two Ready replicas for each application Deployment. If the public REST
+API is routed, run the two `curl` checks of section 7 point 6 against its host.
+On Cilium, check
 `kubectl -n <namespace> get gateway skein -o yaml` and
-`kubectl -n <namespace> get httproute skein -o yaml`: the Gateway must be
+`kubectl -n <namespace> get httproute skein skein-public-api -o yaml`: the Gateway must be
 Programmed and the route Accepted with ResolvedRefs, with `observedGeneration`
 matching each resource's `metadata.generation`. Conditions for an older
 generation do not confirm that the current configuration was applied.
@@ -315,8 +334,10 @@ Keep this short; you need facts, not a tour.
    - Free ports: `ss -ltnp`. You need 80/443 if you set up the TLS proxy, plus
      the host port the compose file publishes for skein-frontend: by default
      `127.0.0.1:8080` (`SKEIN_BIND_ADDRESS`, `SKEIN_HTTP_PORT`) — reachable from
-     the host only, which is what a TLS proxy on the same host needs. With the
-     bundled store (any of the three), `127.0.0.1:3900` is published too
+     the host only, which is what a TLS proxy on the same host needs. The
+     public REST API port of skein-api is published on the same address,
+     `127.0.0.1:5103` by default (`SKEIN_BIND_ADDRESS`, `SKEIN_PUBLIC_API_PORT`).
+     With the bundled store (any of the three), `127.0.0.1:3900` is published too
      (`SKEIN_S3_BIND_ADDRESS`, `SKEIN_S3_PORT`). Nothing else is published; no
      store has its console published.
 3. **Domain and DNS.** Ask for the hostname Skein will live at (for example
@@ -338,6 +359,10 @@ Keep this short; you need facts, not a tour.
 5. If attachments will use a **bundled store**, the browser must reach the store
    directly (section 3, group F) — usually a second hostname such as
    `files.example.com` through the same TLS proxy. Settle DNS for it now.
+6. If the **public REST API** will be reachable from outside (section 3, A3),
+   it needs a host name of its own, such as `api.example.com`, through the same
+   TLS proxy to skein-api's published port (5103 by default). Settle DNS for it
+   now.
 
 ---
 
@@ -387,6 +412,36 @@ attacks.
 
 Hard to change later? The hostname is **hard** to change: it is in every
 emailed link and invitation already sent and in every agent's MCP config.
+
+**A3. Should the public REST API be reachable, and at which address?**
+Explain: besides MCP, Skein has a REST API for scripts and integrations,
+authenticated by the same per-user API keys (each key with its own
+permissions, scope and expiry). skein-api serves it on a port of its own, not
+through skein-frontend, and it is **on by default**. Any active user's valid
+key works on it; who can reach the port at all is decided by the TLS proxy —
+apart from switching the API off, the application does not restrict that.
+
+- Reachable (recommended when integrations are wanted): a site on its own host
+  name (section 2, point 6) forwarding to `127.0.0.1:5103`. No WebSocket and no
+  unbuffered streaming are needed. The proxy must **overwrite** `X-Forwarded-For`
+  with the address it sees, not pass on what the client sent.
+- Sets `SKEIN_PUBLIC_API_URL` = `https://<api host>` (optional; it becomes the
+  `servers` entry of `/api/v1/openapi.json` and the address shown on the API
+  keys page; without it the page says the address is not set and skein-api logs
+  a warning).
+- `SKEIN_PUBLIC_API_TRUSTED_PROXIES`: in `docker-compose.production.yml` it
+  defaults to the compose network (`SKEIN_NETWORK_SUBNET`), the address a TLS
+  proxy on the host arrives from, so `X-Forwarded-For` names the client and the
+  limit of failed authentications counts per client. If the port is ever
+  published to clients with no proxy in front, set it empty
+  (`SKEIN_PUBLIC_API_TRUSTED_PROXIES=`) so clients cannot forge the header.
+- Not wanted at all: `SKEIN_PUBLIC_API_ENABLED=false`, and no site for it.
+- Limits: `SKEIN_PUBLIC_API_RATE_LIMIT_PER_MINUTE` (requests per key, default
+  100) and `SKEIN_PUBLIC_API_AUTH_FAILURES_PER_MINUTE` (failed authentications
+  per client IP, default 20). Usually left at the defaults.
+
+Easy to change later: yes; a changed address only needs a restart of skein-api
+and the clients' configuration.
 
 ### Group B — how people sign in
 
@@ -860,8 +915,15 @@ The service names below are those of the compose file: `skein-api`, `skein-web`,
      -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"install-check","version":"0"}}}'
    ```
 
-   A JSON-RPC result naming the server means MCP works. Revoke this test key
-   afterwards unless the person wants to keep it.
+   A JSON-RPC result naming the server means MCP works. If the public REST API
+   is routed (A3), check it with the same key:
+
+   ```bash
+   curl -fsS https://<api host>/api/v1/openapi.json | head -c 200   # "openapi": "3.1.…"
+   curl -fsS https://<api host>/api/v1/me -H "X-Skein-Api-Key: $KEY"  # the key's owner
+   ```
+
+   Revoke this test key afterwards unless the person wants to keep it.
 7. **Task monitors (agent API).** Agents' task monitors call
    `<SKEIN_AGENT_PUBLIC_URL>/agent/v1/…`. Check that this path reaches Skein and
    not the web UI: `curl -sS -o /dev/null -w '%{http_code} %{content_type}\n' https://<host>/agent/v1/monitor-script`

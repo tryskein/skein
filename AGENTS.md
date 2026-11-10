@@ -13,9 +13,9 @@ skein/                    this repository — the top of the workspace
 ├── docker-compose.*.yml  local / test / e2e stacks
 ├── scripts/              integration and e2e harnesses, cross-repo checks
 └── projects/             not tracked by this repository
-    ├── skein-api/        Go backend — REST /api/v1 + MCP /mcp, DB migrations
-    ├── skein-web/        .NET BFF — cookie + Redis sessions, proxy, SignalR hub
-    └── skein-frontend/   React SPA served by nginx — the only public entry point
+    ├── skein-api/        Go backend — internal REST /ui/v1, public REST /api/v1 (own port), MCP /mcp, DB migrations
+    ├── skein-web/        .NET BFF — cookie + Redis sessions, proxy (/api/v1 → skein-api /ui/v1), SignalR hub
+    └── skein-frontend/   React SPA served by nginx — the entry point of the UI, MCP and agents
 ```
 
 **Each service has its own `AGENTS.md`** with its stack, commands, tests and
@@ -32,16 +32,20 @@ docker compose --env-file versions.env -f docker-compose.local.yml \
   -f docker-compose.local.build.yml up -d --build
 # UI:  http://localhost:8080   (seeded admin: admin@test.com / qwerty12)
 # MCP: http://localhost:8080/mcp  (header X-Skein-Api-Key: ska_...)
+# Public REST API: http://localhost:5103/api/v1  (same key; spec: /api/v1/openapi.json)
 ```
 
 Unless the person explicitly asks for source development or a build of modified
 code, use the published images for installing, trying out and testing Skein; do
 not clone the service repositories for that.
 
-Only the frontend nginx (8080) is the application entry point. Garage's S3
-port (3900) is also published, for the browser's presigned URLs; Garage has no
-console. Both ports are bound to `127.0.0.1`. Postgres, Redis, NATS, skein-api and skein-web stay on the internal
-compose network. The credentials above are for local development only.
+The frontend nginx (8080) is the entry point of the UI, MCP and agents. The
+public REST API is skein-api's own second port (5103), reached without
+skein-web; it serves only `/api/v1`. Garage's S3 port (3900) is also published,
+for the browser's presigned URLs; Garage has no console. All three ports are
+bound to `127.0.0.1`. Postgres, Redis, NATS, skein-web and the main port of
+skein-api (5100, the internal API `/ui/v1`) stay on the internal compose
+network. The credentials above are for local development only.
 
 ## Docs
 

@@ -523,8 +523,9 @@ first new api pod starts — and the backup gate of 2.3 runs before it.
 rules of the previous release on data the new rules govern — the very "mixed
 fleet" 2.2 forbids. The old web cannot run next to the new api either, and the new
 web cannot run next to the old api: the new web asks the api for the installation
-settings at startup (`GET /api/v1/internal/instance-config`); an old api answers
-404, and the new web exits at once without becoming ready.
+settings at startup (`GET /api/v1/internal/instance-config` — the internal API
+was still under `/api/v1` then; it is `/ui/v1` since the release of section 4);
+an old api answers 404, and the new web exits at once without becoming ready.
 
 The rollback is not free, which is what makes the backup gate mandatory here even
 though nothing is deleted on the way up: `projects/skein-api/src/migrations/000071_spaces_transition.down.sql`
@@ -634,7 +635,8 @@ another api process is writing a different value at the same moment, and the pod
 refuses.
 
 **skein-web, at startup** — no valid answer from
-`GET /api/v1/internal/instance-config` within `SKEIN_API_STARTUP_TIMEOUT_SECONDS`
+`GET /ui/v1/internal/instance-config` (`/api/v1/…` before the release of
+section 4) within `SKEIN_API_STARTUP_TIMEOUT_SECONDS`
 (retried with backoff); and, without waiting for the timeout: 401 (the two
 `SKEIN_INTERNAL_SECRET` values differ), 404 (wrong `SKEIN_API_URL`, or an api
 without the route — an old release), or a 200 body that is not the contract, an
@@ -764,3 +766,120 @@ stop-all, like the outbox rows (2.2) — but their deadline keeps running. A win
 longer than `SKEIN_EMAIL_DELIVERY_TTL` expires everything queued before it: the
 first api pod to start runs the cleanup and ends them as `expired`, even with mail
 turned off.
+
+## 4. The release that introduces the public REST API
+
+This release gives skein-api a public REST API on a port of its own and moves
+the internal API of the web UI from `/api/v1` to `/ui/v1`. Every variable named
+below is described in `projects/skein-api/docs/env-reference.md`.
+
+### 4.1 No new setting is required; the public API is on by default
+
+**Required:** nothing, to keep an existing installation working. Decide only
+whether the public API is reachable from outside (4.3).
+
+**Why.** `SKEIN_PUBLIC_API_ENABLED` defaults to `true` and
+`SKEIN_PUBLIC_API_PORT` to `5103`; every other `SKEIN_PUBLIC_API_*` variable has
+a default or is optional. `SKEIN_PUBLIC_API_URL` (the address clients use) is
+optional: without it `/api/v1/openapi.json` has no `servers`, the API keys page
+of the web UI says the address is not set, and skein-api logs a warning at
+startup. A malformed value of any of these variables stops the start
+(section 3.2, first group), so check what you set before the window.
+
+**How to do it:** to switch the public API off, set
+`SKEIN_PUBLIC_API_ENABLED=false`: the port then does not listen, `/api/v1` and
+`openapi.json` are not served, the API keys page says the public API is off,
+and the web UI and `/mcp` work as before. To publish it, give it a host name of
+its own and set `SKEIN_PUBLIC_API_URL` to that address (`INSTALL.md`).
+
+### 4.2 The transitional release: both prefixes on the main port
+
+**Required:** roll out skein-api of this release before or together with
+skein-web of this release, as an ordinary rolling update. Before the **next**
+skein-api release, every skein-web must run this release or a newer one.
+
+**Why.** skein-web keeps the browser's paths (`/api/v1/*`) and forwards them to
+skein-api's `/ui/v1/*`; its own startup call moves to
+`/ui/v1/internal/instance-config` too. skein-api of this release accepts the
+internal API on its main port under **both** `/api/v1` and `/ui/v1`, so an old
+web and a new web both work against it, and open browser tabs keep working
+through the rollout. The order matters only if a new web pod starts while an
+old api still serves: the old api answers 404 on `/ui/v1`, and the new pod
+never becomes ready (section 3.2) — the old web pods keep serving, so there is
+no outage, but the web rollout waits until the api is upgraded. The next
+skein-api release removes `/api/v1` from the main port; a web older than this
+release does not work against it.
+
+**How to check:** after the rollout every skein-web pod is ready (its startup
+call to `/ui/v1/internal/instance-config` succeeded), and the UI still works in
+a browser tab that was open before the release.
+
+### 4.3 Who may reach the public port is decided by the ingress
+
+**Required:** the public port is reached only through the TLS proxy, Ingress or
+Gateway that you choose to route to it, on a host name of its own. If the
+installation must not be reachable by API key from outside, do not route the
+port (or restrict the route there).
+
+**Why.** On the public port skein-api accepts any valid API key of any active
+user of the installation, internal and external users alike: the check that
+refuses keys of internal users on the external surface of `/mcp` does not apply
+there. The network boundary is the deployment's job, as for the operator port
+(3.4) — only here the port is meant to be routed. The port serves nothing but
+`/api/v1`: no `/ui/v1`, `/mcp`, `/agent/v1`, `/metrics` or health routes. The
+public API sends no CORS headers; browsers on other origins cannot call it.
+
+**How to do it:** the examples publish it on `127.0.0.1` in Compose
+(`docker-compose.production.yml`, for a TLS proxy on the same host) and route
+it with a separate Ingress (`deploy/kubernetes/ingress.yaml`, `skein-public-api`)
+or a separate Gateway listener and HTTPRoute (`deploy/kubernetes-cilium/`). A
+NetworkPolicy should let only the ingress controller reach port 5103.
+
+### 4.4 Behind a proxy, declare it: `SKEIN_PUBLIC_API_TRUSTED_PROXIES`
+
+**Required:** behind a TLS proxy, Ingress or Gateway, set
+`SKEIN_PUBLIC_API_TRUSTED_PROXIES` to the addresses that proxy connects from,
+and make the proxy overwrite (not pass on) the `X-Forwarded-For` a client sends.
+
+**Why.** Failed authentications on the public port are limited per client IP
+(`SKEIN_PUBLIC_API_AUTH_FAILURES_PER_MINUTE`, default 20) before the key is
+checked. The client IP is the direct peer; `X-Forwarded-For` / `X-Real-IP` are
+believed only from a trusted proxy. Left empty behind a proxy, every client
+shares the proxy's IP: twenty bad keys a minute from anyone put that IP over
+the limit, and then only keys that authenticated in the last 15 minutes still
+pass — every other client, a valid key included, gets 429 until the window
+ends. Trusting a range wider than the proxies lets anything in it forge the
+header.
+
+**How to do it:** `docker-compose.production.yml` defaults it to the compose
+network (`SKEIN_NETWORK_SUBNET`), which is where a proxy on the host arrives
+from; set it empty if the port is published to clients with no proxy in front.
+The Kubernetes example sets the pod network of the ingress controller in
+`configmap.yaml`; read the real range from your cluster (with Cilium Gateway,
+the address Cilium's Envoy connects from).
+
+### 4.5 Limits are per replica; routine 4xx are not alerts
+
+- **The request limit per key** (`SKEIN_PUBLIC_API_RATE_LIMIT_PER_MINUTE`,
+  default 100) and the limit of failed authentications are counted in the
+  memory of each skein-api replica, so the effective limit is the value times
+  the number of replicas (two in the Kubernetes example: up to 200 requests a
+  minute per key). A replica that restarts starts its counters at zero.
+- **Alerting.** The public API answers routine outcomes with 4xx: 401, 403,
+  404, 409, 412, 422, 428 and 429 are client errors or business outcomes of a
+  correct service, not failures. Do not alert on them; alert on 5xx of the
+  public port as for the main one. The request metrics tell the public and the
+  internal surface apart.
+
+### 4.6 There is no rollback below this release
+
+**Required:** treat this release as forward-only. If it goes wrong, the fix is
+the next release, not a downgrade of skein-api.
+
+**Why.** The migrations of this release give every API key permissions, a scope
+and an expiry and move existing keys to that model (existing keys keep working:
+no expiry, the widest permissions). An older skein-api does not know these
+columns and their meaning, so running it on the migrated schema is not
+supported. Run the backup gate of 2.3 before the window all the same: it
+protects the data if the migration itself fails; it is not a way back to the
+older release once this one has served.

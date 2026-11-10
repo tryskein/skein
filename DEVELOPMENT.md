@@ -75,7 +75,7 @@ If something is missing or older than listed: tell the person, propose how to
 install it, and **wait for a yes** before installing.
 
 Also check that the ports the local stack publishes are free:
-**8080** (UI), **3900** (Garage S3 API), **5173** (Vite dev server). For example `ss -ltn` or `lsof -i :8080`.
+**8080** (UI), **3900** (Garage S3 API), **5103** (public REST API of skein-api), **5173** (Vite dev server). For example `ss -ltn` or `lsof -i :8080`.
 
 ---
 
@@ -211,6 +211,7 @@ Where things are:
 | UI (production-built bundle) | http://localhost:8080 |
 | UI with hot reload (Vite) | http://localhost:5173 |
 | MCP endpoint for agents | http://localhost:8080/mcp, header `X-Skein-Api-Key: ska_…` |
+| Public REST API (skein-api's own port) | http://localhost:5103/api/v1, the same header; spec at `/api/v1/openapi.json` |
 | S3 API (Garage), used by the browser for attachments | http://localhost:3900 — key `skeinlocal` / `skein-local-dev-secret-key` (no console) |
 
 If you run inside a devcontainer, `localhost` is your container, not the
@@ -336,7 +337,7 @@ Explain how to work in the workspace:
 | Integration: `Dirty database version …` or `SQLSTATE 40001` in unrelated packages | Narrowed run without `-p 1`. Re-run as `./scripts/integration-test.sh -p 1 <packages>`. |
 | Integration: `ZERO tests executed` | Every test skipped, `-run` matched nothing, or the scope has no tests. Check the package path and pattern. |
 | `docker compose -f docker-compose.test.yml …` complains `SKEIN_ITEST_NETWORK is not set` | That file is meant to be driven by `scripts/integration-test.sh`; use the script. Same for `docker-compose.e2e.yml` and `scripts/e2e-test.sh`. |
-| `up` fails with `port is already allocated` | 8080, 3900 or 5173 is taken. Find the owner (`ss -ltnp`, `docker ps`) and ask the person before stopping anything. |
+| `up` fails with `port is already allocated` | 8080, 3900, 5103 or 5173 is taken. Find the owner (`ss -ltnp`, `docker ps`) and ask the person before stopping anything. |
 | `could not create … on any 10.211.N.0/24` (or `10.212.N`) | No free subnet in that range on this daemon. Show `docker network ls` to the person; do not delete networks you did not create. |
 | A killed harness run left `skein-itest-*` / `skein-e2e-*` behind | Visible in `docker compose ls -a`. Remove it only once you are sure it is your run, not another live run. |
 | Garage stops at start: `Access key skeinlocal is associated with a secret key different…` | A `garage-data` volume left over from a run with different dev credentials. Dev data is disposable — with the person's consent remove only that volume (`docker volume ls \| grep garage-data`) and `up` again. Same for a `replication_factor` change: it cannot be changed on an existing volume. |
