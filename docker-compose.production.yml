@@ -41,7 +41,9 @@
 # NOT passed to them. To use one, add a line `NAME:` under the service's
 # `environment:`; it is then taken from `.env` when present and left unset
 # when not. Never write `NAME=` with an empty value to mean "off": in both
-# services an empty value is not the same as an absent one.
+# services an empty value is not the same as an absent one. One exception:
+# `SKEIN_PUBLIC_API_TRUSTED_PROXIES=` (empty) in `.env` means "trust no proxy",
+# while leaving it out keeps the default below (the compose network).
 
 name: skein
 
