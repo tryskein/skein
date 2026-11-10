@@ -816,6 +816,9 @@ tell them the exact `.env` lines to fill in themselves.
    SKEIN_AGENT_PUBLIC_URL=https://skein.example.com
    SKEIN_APP_BASE_URL=https://skein.example.com
    # SKEIN_TRUSTED_PROXIES stays unset: the compose default is right (A2)
+   # public REST API on its own host name (A3); the trusted proxies stay unset
+   # for a TLS proxy on this host
+   SKEIN_PUBLIC_API_URL=https://api.example.com
 
    # database password and internal channel (same secret for skein-api and skein-web)
    POSTGRES_PASSWORD=<generated>
