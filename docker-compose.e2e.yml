@@ -182,6 +182,9 @@ services:
   e2e-runner:
     cpus: 2
     mem_limit: 3g
+    # Chromium of every Playwright worker forks renderer, GPU and zygote
+    # processes; a bounded runner's default process limit is too small.
+    pids_limit: 2048
     profiles: ["runner"]
     image: mcr.microsoft.com/playwright:v1.63.0-noble
     working_dir: /work
