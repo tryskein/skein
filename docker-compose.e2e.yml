@@ -44,7 +44,9 @@ name: skein-e2e
 # published (isolation, see above): Playwright's browser reaches the store by
 # its service name on the run's network, as S3_PUBLIC_URL below says.
 include:
-  - garage/garage.dev.yml
+  - path:
+      - garage/garage.dev.yml
+      - garage/e2e.yml
 
 # Every container has explicit cpus / mem_limit: runners that enforce a
 # bounded budget (shared test machines) require them. Sum with Garage:
