@@ -46,8 +46,13 @@ name: skein-e2e
 include:
   - garage/garage.dev.yml
 
+# Every container has explicit cpus / mem_limit: runners that enforce a
+# bounded budget (shared test machines) require them. Sum with Garage:
+# 7.5 CPU, about 7.6 GiB; the image builds are not part of it.
 services:
   postgres:
+    cpus: 1.5
+    mem_limit: 1536m
     image: pgvector/pgvector:pg18
     environment:
       POSTGRES_USER: skein
@@ -62,6 +67,8 @@ services:
       retries: 30
 
   redis:
+    cpus: 0.25
+    mem_limit: 256m
     image: valkey/valkey:9.1.2-alpine@sha256:48332870af354a799964c0012ae1194a0bf2bf894eb508f945810596dc2d8d11
     healthcheck:
       test: ["CMD", "valkey-cli", "ping"]
@@ -72,10 +79,14 @@ services:
   # distroless — no in-container healthcheck possible; skein-api's wrapper
   # waits for its port instead.
   nats:
+    cpus: 0.25
+    mem_limit: 128m
     image: nats:latest
     command: ["-js"]
 
   skein-api:
+    cpus: 1.5
+    mem_limit: 1g
     image: ${E2E_API_IMAGE:?E2E_API_IMAGE is not set - run scripts/e2e-test.sh}
     entrypoint:
       - sh
@@ -128,6 +139,8 @@ services:
       retries: 90
 
   skein-web:
+    cpus: 1
+    mem_limit: 1g
     image: ${E2E_WEB_IMAGE:?E2E_WEB_IMAGE is not set - run scripts/e2e-test.sh}
     entrypoint:
       - sh
@@ -151,6 +164,8 @@ services:
       retries: 150
 
   skein-frontend:
+    cpus: 0.5
+    mem_limit: 256m
     image: ${E2E_FRONTEND_IMAGE:?E2E_FRONTEND_IMAGE is not set - run scripts/e2e-test.sh}
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:5102/healthz || exit 1"]
@@ -163,6 +178,8 @@ services:
   # from the image (its version equals @playwright/test in package.json —
   # test-groups-guard / the harness check that).
   e2e-runner:
+    cpus: 2
+    mem_limit: 3g
     profiles: ["runner"]
     image: mcr.microsoft.com/playwright:v1.63.0-noble
     working_dir: /work
