@@ -1,5 +1,11 @@
-# skein-api: business logic, REST (/api/v1), MCP (/mcp), the agent API
-# (/agent/v1). Reached only through skein-web; it has no Ingress route.
+# skein-api: business logic, the internal REST API of the web UI (/ui/v1), MCP
+# (/mcp), the agent API (/agent/v1). These are on port `http` (5100), reached
+# only through skein-web; the browser's /api/v1 is proxied by skein-web to
+# /ui/v1. The public REST API (/api/v1, authenticated by an API key) is a
+# separate server on port `public` (5103, SKEIN_PUBLIC_API_PORT in
+# configmap.yaml); it is the one skein-api port with an Ingress route of its
+# own (ingress.yaml, a host of its own). skein-api runs no check of its own on
+# who may reach that port: the Ingress decides it.
 # Its optional operator port is never exposed here.
 apiVersion: apps/v1
 kind: Deployment
@@ -59,6 +65,9 @@ spec:
           ports:
             - name: http
               containerPort: 5100
+            # Must equal SKEIN_PUBLIC_API_PORT in configmap.yaml.
+            - name: public
+              containerPort: 5103
           envFrom:
             - configMapRef:
                 name: skein-api-config
@@ -137,6 +146,11 @@ spec:
     - name: http
       port: 5100
       targetPort: http
+    # The public REST API; routed by the `skein-public-api` Ingress (or the
+    # `skein-public-api` HTTPRoute with Cilium).
+    - name: public
+      port: 5103
+      targetPort: public
 ---
 apiVersion: policy/v1
 kind: PodDisruptionBudget

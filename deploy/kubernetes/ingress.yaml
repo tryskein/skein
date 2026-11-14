@@ -1,11 +1,17 @@
 # Routing for ingress-nginx: backend paths go straight to skein-web,
 # everything else to skein-frontend. All three Deployments use two replicas.
+# The public REST API has its own host and goes straight to skein-api's public
+# port (the third Ingress below).
 # For Cilium Gateway API, use ../kubernetes-cilium/ instead of these Ingresses.
 #
 # WHAT YOU SET
 #   - ingressClassName: the class of YOUR ingress-nginx controller (kubectl get
-#     ingressclass). Both Ingresses use `nginx` below; change both if needed.
+#     ingressclass). All three Ingresses use `nginx` below; change every one if needed.
 #   - host: the public host name (the same as in SKEIN_AGENT_PUBLIC_URL).
+#   - public API host: a second host name for the public REST API (the same as
+#     in SKEIN_PUBLIC_API_URL). The TLS certificate must cover it. To keep the
+#     public API off the internet, leave its Ingress out or restrict it here:
+#     skein-api itself accepts any valid API key on that port.
 #   - TLS: terminate https here. skein-web needs X-Forwarded-Proto from the
 #     controller to set the Secure flag of the session cookie; every common
 #     controller sends it. The `tls` block names a Secret you provide (or one
@@ -102,3 +108,25 @@ spec:
       http:
         paths:
           - {path: /hub, pathType: Prefix, backend: {service: {name: skein-web-hub, port: {number: 8080}}}}
+---
+# The public REST API: /api/v1 on its own host, straight to skein-api's public
+# port, not through skein-web. That port serves nothing but /api/v1. Its
+# per-IP limit of failed authentications relies on X-Forwarded-For from this
+# controller, which SKEIN_PUBLIC_API_TRUSTED_PROXIES (configmap.yaml) trusts.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: skein-public-api
+  labels:
+    app.kubernetes.io/name: skein
+    app.kubernetes.io/part-of: skein
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [api.skein.example.com]
+      secretName: <your-tls-secret>
+  rules:
+    - host: api.skein.example.com
+      http:
+        paths:
+          - {path: /api/v1, pathType: Prefix, backend: {service: {name: skein-api, port: {number: 5103}}}}

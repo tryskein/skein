@@ -53,6 +53,28 @@ data:
   S3_PUBLIC_URL: "https://s3.example.com"
   S3_BUCKET: "skein-attachments"
   S3_CORS_ALLOWED_ORIGINS: "https://skein.example.com"
+
+  # Public REST API (/api/v1, authenticated by an API key): on by default, on a
+  # port of its own, served on a host of its own (ingress.yaml). The port must
+  # equal the `public` containerPort in skein-api.yaml. SKEIN_PUBLIC_API_URL is
+  # optional - the address clients use; without it /api/v1/openapi.json has no
+  # `servers` and the API keys page says the address is not set. To switch the
+  # public API off, add SKEIN_PUBLIC_API_ENABLED: "false" and remove the
+  # `skein-public-api` route. The request limit per key is counted in each pod:
+  # with 2 replicas a key gets up to twice SKEIN_PUBLIC_API_RATE_LIMIT_PER_MINUTE.
+  SKEIN_PUBLIC_API_PORT: "5103"
+  SKEIN_PUBLIC_API_URL: "https://api.skein.example.com"
+
+  # The peers whose X-Forwarded-For / X-Real-IP name the client on the public
+  # port. Here the peer is the ingress controller's pod (with Cilium Gateway,
+  # the address Cilium's Envoy connects from), so this is the pod network of
+  # your cluster (the example is a common default; read yours from the cluster).
+  # Without it every client shares the controller's IP in the limit of failed
+  # authentications, and a burst of bad keys from anyone blocks the others. As
+  # for skein-web below, pair it with a NetworkPolicy that lets only the
+  # ingress controller reach port 5103: any pod inside the trusted range can
+  # otherwise forge these headers.
+  SKEIN_PUBLIC_API_TRUSTED_PROXIES: "10.244.0.0/16"
 ---
 apiVersion: v1
 kind: ConfigMap

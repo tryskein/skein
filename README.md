@@ -68,8 +68,8 @@ three service repositories, which are cloned into `projects/` of this one.
 
 ### Install from the registry
 
-You need Docker with Compose 2.23.1 or newer and curl. Ports 8080 and 3900 must
-be free.
+You need Docker with Compose 2.23.1 or newer and curl. Ports 8080, 3900 and
+5103 must be free.
 
 ```bash
 mkdir -p skein/garage && cd skein
@@ -87,8 +87,8 @@ you must never use them on a server.
 
 ### Build from source
 
-You need the same Git and Docker (Compose 2.23.1 or newer); ports 8080, 3900
-and 5173 must be free.
+You need the same Git and Docker (Compose 2.23.1 or newer); ports 8080, 3900,
+5103 and 5173 must be free.
 
 ```bash
 git clone https://github.com/tryskein/skein.git

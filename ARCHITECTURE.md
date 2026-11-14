@@ -8,8 +8,12 @@ tools — those live next to the code (see [Configuration](#configuration)).
 
 ## Principles
 
-1. **Single public edge.** One HTTP entry point faces the outside. Neither
-   backend is exposed publicly.
+1. **Single public edge, plus one API port.** One HTTP entry point faces the
+   outside for the web UI, MCP and agents; `skein-web` and the main port of
+   `skein-api` are not exposed publicly. The one exception is the public REST
+   API: a separate port of `skein-api`, published on a host of its own and
+   reached without `skein-web`. It serves nothing but `/api/v1`, and who may
+   reach it is decided by the deployment's ingress, not by the application.
 2. **Few moving parts.** Two backend services (`skein-api` in Go, `skein-web` in
    .NET) and one frontend (`skein-frontend`, a React SPA served by nginx).
 3. **Stateless services.** State lives in PostgreSQL, Redis, NATS and object
@@ -25,7 +29,7 @@ tools — those live next to the code (see [Configuration](#configuration)).
 |---|---|---|
 | `skein-frontend` | nginx serving the SPA bundle; the public edge in Docker Compose, routing backend paths to `skein-web` | yes (Compose) / behind the gateway (k8s) |
 | `skein-web` | BFF: browser sessions, login, SignalR hub, reverse proxy to `skein-api` | no |
-| `skein-api` | All business logic and data access: REST API, MCP server, agent task-monitor API, background workers | no |
+| `skein-api` | All business logic and data access: internal REST API of the web UI, public REST API, MCP server, agent task-monitor API, background workers | only its public REST API port |
 | PostgreSQL | System of record, including the event log / outbox, full-text and vector search | no |
 | Redis | `skein-web` state: sessions, cookie-encryption keys, login throttling, SignalR backplane | no |
 | NATS (Core) | Live-event bus from `skein-api` to `skein-web` | no |
@@ -45,13 +49,26 @@ The primary backend. Go with `chi`, `pgx/v5` + `pgxpool`, `golang-migrate`,
   HTTP handlers and `mcp/` the MCP tools. SQL is written by hand over `pgx` in
   the domain packages; a small part of it is generated with `sqlc`
   (`internal/storage/queries` → `internal/storage/generated`). There is no ORM.
-- **Surfaces.** The REST API under `/api/v1`, the MCP server under `/mcp`, a
+- **Surfaces.** On the main port: the internal REST API of the web UI under
+  `/ui/v1` (reached only through `skein-web`), the MCP server under `/mcp`, a
   read-only agent task-monitor API under `/agent/v1` (short-lived `skm_`
   tokens), RFC 9728 protected-resource metadata under `/.well-known/` (only when
   authorization servers are configured), and `/healthz`, `/ready`, `/metrics`.
-  An **operator API** for account administration is a second, optional listener
-  on its own port, guarded by its own key; it is never routed through the public
-  edge ([DEPLOYMENT-NOTES §3.4](DEPLOYMENT-NOTES.md)).
+  For one transitional release the main port also accepts the old prefix
+  `/api/v1` for the internal API, so old and new `skein-web` both work against
+  it and the UI has no downtime during the rollout. `skein-api` is rolled out
+  before or together with `skein-web`: a new `skein-web` does not become ready
+  against an old `skein-api`. The release after it removes the old prefix
+  ([DEPLOYMENT-NOTES §4.2](DEPLOYMENT-NOTES.md)).
+- **Public REST API.** A second listener on its own port (5103 by default; on
+  by default, switched off by a setting) serves `/api/v1` and only that:
+  authenticated by an API key, with the key's permissions, scope and expiry
+  checked on every request, a request limit per key and a limit of failed
+  authentications per client IP. Its OpenAPI 3.1 document is
+  `/api/v1/openapi.json`.
+- **Operator API.** Account administration is a third, optional listener on its
+  own port, guarded by its own key; it is never routed through the public edge
+  ([DEPLOYMENT-NOTES §3.4](DEPLOYMENT-NOTES.md)).
 - **Schema.** Migrations are applied by the service itself at startup, guarded by
   golang-migrate's advisory lock so concurrent replicas do not race. The
   `migrate` CLI is also shipped in the image for manual operation. Settings that
@@ -73,7 +90,8 @@ The BFF between the browser and `skein-api`. It does not serve the SPA.
 - **Own endpoints.** `/api/auth/*` (login, logout, current user, client
   configuration, account flows such as sign-up and password reset), the OIDC
   challenge `/oauth2/start` in native-OIDC mode, and the SignalR hub at `/hub`.
-- **Reverse proxy.** `/api/v1/*`, `/mcp`, `/agent/v1/*` and the
+- **Reverse proxy.** `/api/v1/*` (to `skein-api`'s internal API at
+  `/ui/v1/*`: the browser's paths do not change), `/mcp`, `/agent/v1/*` and the
   `/.well-known/oauth-protected-resource*` documents are forwarded to
   `skein-api` by our own small middleware rather than YARP: one upstream and a
   fixed identity-forwarding shape do not justify the dependency, and it keeps the
@@ -95,27 +113,28 @@ and the "new version available" banner tracks the SPA version alone.
 ## High-level diagram
 
 ```
- Browser (SPA + SignalR)     MCP clients / agents        Task-monitor runner
-          │ HTTPS                    │ HTTPS                    │ HTTPS
-          ▼                          ▼                          ▼
-┌──────────────────────────────────────────────────────────────────────────┐
-│ Public edge: skein-frontend nginx (Compose) / cluster gateway (k8s)      │
-│   SPA static files                                                       │
-│   /api/  /hub  /mcp  /agent/v1  /oauth2/                                 │
-│   /.well-known/oauth-protected-resource*                                 │
-│        └──────────────────────────► skein-web                            │
-└──────────────────────────────────────┬───────────────────────────────────┘
-                                       ▼ HTTP (internal)
-┌──────────────────────────────────────────────────────────────────────────┐
-│ skein-web (BFF)                                                          │
-│   /api/auth/*   /oauth2/start   /hub (SignalR)                           │
-│   proxy: /api/v1/*  /mcp  /agent/v1/*  /.well-known/…                    │
-└────┬──────────────────────────┬─────────────────────────────▲────────────┘
-     │ sessions, keys,          │ HTTP + X-Skein-* headers    │ subscribe
-     │ backplane                ▼                             │
-  ┌──┴───┐   ┌──────────────────────────────────────────┐   ┌─┴────┐
-  │Redis │   │ skein-api                                │──►│ NATS │
-  └──────┘   │   REST /api/v1   MCP /mcp   /agent/v1    │pub└──────┘
+ Browser (SPA + SignalR)     MCP clients / agents        Task-monitor runner      REST API clients
+          │ HTTPS                    │ HTTPS                    │ HTTPS                 │ HTTPS, own host
+          ▼                          ▼                          ▼                       │
+┌──────────────────────────────────────────────────────────────────────────┐          │
+│ Public edge: skein-frontend nginx (Compose) / cluster gateway (k8s)      │          │
+│   SPA static files                                                       │          │
+│   /api/  /hub  /mcp  /agent/v1  /oauth2/                                 │          │
+│   /.well-known/oauth-protected-resource*                                 │          │
+│        └──────────────────────────► skein-web                            │          │
+└──────────────────────────────────────┬───────────────────────────────────┘          │
+                                       ▼ HTTP (internal)                              │ TLS proxy /
+┌──────────────────────────────────────────────────────────────────────────┐          │ Ingress
+│ skein-web (BFF)                                                          │          │
+│   /api/auth/*   /oauth2/start   /hub (SignalR)                           │          │
+│   proxy: /api/v1/* → /ui/v1/*   /mcp  /agent/v1/*  /.well-known/…        │          │
+└────┬──────────────────────────┬─────────────────────────────▲────────────┘          │
+     │ sessions, keys,          │ HTTP + X-Skein-* headers    │ subscribe             │
+     │ backplane                ▼                             │                       │
+  ┌──┴───┐   ┌──────────────────────────────────────────┐   ┌─┴────┐                  │
+  │Redis │   │ skein-api                                │──►│ NATS │                  │
+  └──────┘   │   main port: /ui/v1  /mcp  /agent/v1     │pub└──────┘                  │
+             │   public port: /api/v1 ◄─────────────────┼─────────────────────────────┘
              │   domain packages + background workers   │
              └──┬─────────────┬──────────────┬──────────┘
                 ▼             ▼              ▼
@@ -129,20 +148,40 @@ and the "new version available" banner tracks the SPA version alone.
 
 ## Communication flows
 
-### Browser → REST API
+### Browser → internal REST API
 
 ```
 SPA ──GET /api/v1/…, session cookie──► edge ──► skein-web
   skein-web: validates the cookie, strips any inbound X-Skein-* headers,
-             adds X-Skein-Internal-Secret and the X-Skein-User-* identity headers
-  ──► skein-api: checks the internal secret, resolves the user, runs the query
+             adds X-Skein-Internal-Secret and the X-Skein-User-* identity headers,
+             rewrites the prefix /api/v1 to /ui/v1
+  ──► skein-api /ui/v1/…: checks the internal secret, resolves the user, runs the query
   ◄── JSON ── skein-web ◄── edge ◄──
 ```
 
 `skein-api` trusts identity headers only on a request that carries the shared
 internal secret, so the browser cannot reach it except through `skein-web`.
 The link between them is plain HTTP inside the private network; the secret,
-not the transport, authenticates the caller.
+not the transport, authenticates the caller. This internal API is shaped for
+the web UI and changes with it; it is not a contract for other clients.
+
+### API client → public REST API
+
+```
+client ──GET /api/v1/…, X-Skein-Api-Key: ska_…──► TLS proxy / Ingress (own host)
+  ──► skein-api public port: limit of failed authentications per client IP →
+      key (status, expiry, active owner) → request limit per key →
+      the key's permission for the operation → the key's scope → the same
+      domain operation the web UI and MCP use
+  ◄── JSON, or an RFC 9457 problem ──
+```
+
+`skein-web` is not on this path. The public port ignores the identity headers
+of the internal path (`X-Skein-User-*`, `X-Skein-Internal-Secret`) and
+`Mcp-Session-Id`: identity comes from the key alone. The client IP is the
+direct peer; `X-Forwarded-For` / `X-Real-IP` count only from the proxies the
+installation declares as trusted. The OpenAPI document of this surface is
+served by the instance at `/api/v1/openapi.json`.
 
 ### Write → event → live update
 
@@ -206,10 +245,12 @@ password, so a misconfigured IdP cannot lock the installation.
 
 ### Agents
 
-- **API key.** Agents authenticate with a per-user `ska_` key in
-  `X-Skein-Api-Key`; `skein-api` verifies it against a bcrypt hash. The key
-  identifies the owning user (the permission boundary); `Mcp-Session-Id`
-  identifies the individual agent session for audit.
+- **API key.** Agents and REST API clients authenticate with a per-user `ska_`
+  key in `X-Skein-Api-Key`; `skein-api` verifies it against a bcrypt hash. The
+  key identifies the owning user (the permission boundary) and carries its own
+  permissions, scope and expiry, which narrow what the owner may do; the same
+  check applies on `/mcp` and on the public REST API. On `/mcp`,
+  `Mcp-Session-Id` identifies the individual agent session for audit.
 - **Bearer compatibility.** MCP clients that only send `Authorization: Bearer`
   are supported at the boundary: `skein-web` translates a `Bearer ska_…` value
   into `X-Skein-Api-Key` and never forwards `Authorization` upstream. A
@@ -272,8 +313,9 @@ It starts the published images of the release pinned in `versions.env`; adding
 Vite dev-server service for frontend development.
 
 The application is reached through `skein-frontend` on host port 8080;
-`skein-web` and `skein-api` have no host ports. Garage's S3 port is also
-published to the host so that browsers can follow presigned URLs. Both ports
+`skein-web` and the main port of `skein-api` have no host ports. The public REST
+API port of `skein-api` (5103) is published for API clients, and Garage's S3
+port is published so that browsers can follow presigned URLs. All three ports
 are bound to `127.0.0.1`. Ollama, Keycloak and SMTP are not part of the stack
 and are configured as external addresses.
 
@@ -281,10 +323,11 @@ and are configured as external addresses.
 
 ```
 Internet → Ingress / Gateway (TLS)
-             ├─ /api/  /hub  /mcp  /agent/v1  /oauth2/  /.well-known/oauth-protected-resource*
+             ├─ main host: /api/  /hub  /mcp  /agent/v1  /oauth2/  /.well-known/oauth-protected-resource*
              │        → skein-web Service
-             └─ everything else → skein-frontend Service
-           skein-web → skein-api Service (cluster-internal)
+             ├─ main host: everything else → skein-frontend Service
+             └─ public API host: /api/v1 → skein-api Service, public port
+           skein-web → skein-api Service, main port (cluster-internal)
            skein-api operator port → no route; reachable only from the operator's workload
 ```
 
