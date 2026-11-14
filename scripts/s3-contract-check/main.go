@@ -1,5 +1,5 @@
 // s3check: checks an S3-compatible endpoint against what skein-api needs from object storage.
-// Logic of presigning mirrors skein-api internal/attachments/client.go (minio-go v7.1.0).
+// Logic of presigning mirrors skein-api internal/attachments/client.go, with the minio-go version skein-api uses.
 // Output: one line per check: PASS|FAIL|SKIP <id> <name> <detail>. Exit 1 if any FAIL.
 package main
 

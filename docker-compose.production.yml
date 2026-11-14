@@ -132,7 +132,9 @@ services:
   # its S3 port (3900) must be reachable from them: published on 127.0.0.1 for the
   # TLS reverse proxy, which serves it under S3_PUBLIC_URL. The RPC port (3901) is
   # never published.
-  # Image: the official one, pinned by digest (v2.5.0). It holds a single binary
+  # Image: the official one, pinned by digest (v2.5.0). v2.5.0 cannot be rolled
+  # back: a volume it has opened must not be started on an older Garage image
+  # (DEPLOYMENT-NOTES.md, section 5). It holds a single binary
   # and no shell, so there is no init sidecar: `--single-node --default-bucket`
   # make Garage itself apply a one-node layout, create the access key
   # S3_ACCESS_KEY / S3_SECRET_KEY (the fixed key skein-api signs with), create the

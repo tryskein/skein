@@ -26,6 +26,9 @@
 #
 # replication_factor = 1 (single node). It cannot be changed after the first start.
 # Garage has no web console and no admin API here (no [admin] block).
+#
+# v2.5.0 cannot be rolled back: a volume it has opened must not be started on
+# an older Garage image (DEPLOYMENT-NOTES.md, section 5).
 
 services:
   garage:

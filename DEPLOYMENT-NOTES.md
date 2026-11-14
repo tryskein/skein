@@ -885,3 +885,31 @@ columns and their meaning, so running it on the migrated schema is not
 supported. Run the backup gate of 2.3 before the window all the same: it
 protects the data if the migration itself fails; it is not a way back to the
 older release once this one has served.
+
+---
+
+## 5. Bundled Garage v2.4.1 → v2.5.0: no way back to the older image
+
+**Required:** treat the Garage upgrade as forward-only. Before you start the
+`garage` service on `dxflrs/garage:v2.5.0` for the first time, take a backup
+of the `garage-data` volume and test-restore it. Never set `GARAGE_IMAGE` (or
+an older compose file) back to v2.4.1 on a volume that v2.5.0 has opened.
+
+**Why.** The release notes of
+[Garage v2.5.0](https://git.deuxfleurs.fr/Deuxfleurs/garage/releases/tag/v2.5.0)
+say: "This release of Garage is not backwards-compatible: once a node is
+upgraded, you must not downgrade it back to older Garage versions." The
+bundled Garage is a single node with no replica, so the volume is the only
+copy of the attachments; the only way back to v2.4.1 is to restore the volume
+saved before the upgrade, which loses every attachment uploaded since.
+
+The same release restricts `(Put/Get/Delete)BucketLifecycle` to keys with
+owner permission. Skein does not call them, and the key created by
+`--default-bucket` has owner anyway, so nothing changes for Skein there.
+
+**How.** Stop Garage, copy the volume from a container, start it again, and
+check the copy by restoring it into a scratch installation — the commands are
+in [INSTALL.md](INSTALL.md), section 8, point 6 (Backups and Restore). Then
+pull and start the new image. If the upgrade goes wrong, restore that copy
+with the store stopped and start the v2.4.1 image on the restored volume;
+do not start v2.4.1 on the volume v2.5.0 has used.
