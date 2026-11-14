@@ -50,7 +50,7 @@ spec:
       containers:
         - name: nats
           # The image of docker-compose.production.yml, by digest.
-          image: nats:2.12-alpine@sha256:b270f5e2428354c0335612694d7dd2fb588148e567a5757fdff325ef9c9332e6
+          image: nats:2.15.3-alpine@sha256:558394a23dd3c36f2d3a64b51865fd09908010e80a542cea5e75c2af543ed62a
           # -m: the monitoring endpoint the probes read; not exposed by a Service.
           args: ["-m", "8222"]
           ports:

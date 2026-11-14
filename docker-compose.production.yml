@@ -62,7 +62,7 @@ services:
   # non-ASCII search, ILIKE and lower() silently stop working. It can only be
   # chosen when the volume is first initialised — see DEPLOYMENT-NOTES.md §1.
   postgres:
-    image: ${POSTGRES_IMAGE:-pgvector/pgvector:pg18@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11}
+    image: ${POSTGRES_IMAGE:-pgvector/pgvector:pg18@sha256:38681dc6eaf55308e2a4c6de392d131652dcfac70e1263e35cd9b5ea3fe39782}
     environment:
       POSTGRES_USER: skein
       POSTGRES_DB: skein
@@ -90,7 +90,7 @@ services:
   # Sessions, the cookie-encryption key ring, the login throttle and the
   # SignalR backplane. AOF persistence: a restart must not sign everyone out.
   redis:
-    image: valkey/valkey:9.1.2-alpine@sha256:48332870af354a799964c0012ae1194a0bf2bf894eb508f945810596dc2d8d11
+    image: valkey/valkey:9.1.3-alpine@sha256:bf09d58e96d6b4524a15396b65b242bbe18beebbcc15a04d8ee75ddac62fae0b
     command: ["valkey-server", "--appendonly", "yes"]
     volumes:
       - redis-data:/data
@@ -109,7 +109,7 @@ services:
   # NATS data volume. `-m 8222` serves the monitoring endpoint the healthcheck
   # reads; it is not published.
   nats:
-    image: nats:2.12-alpine@sha256:b270f5e2428354c0335612694d7dd2fb588148e567a5757fdff325ef9c9332e6
+    image: nats:2.15.3-alpine@sha256:558394a23dd3c36f2d3a64b51865fd09908010e80a542cea5e75c2af543ed62a
     command: ["-m", "8222"]
     healthcheck:
       test: ["CMD-SHELL", "wget -q --spider http://localhost:8222/healthz || exit 1"]
@@ -132,7 +132,7 @@ services:
   # its S3 port (3900) must be reachable from them: published on 127.0.0.1 for the
   # TLS reverse proxy, which serves it under S3_PUBLIC_URL. The RPC port (3901) is
   # never published.
-  # Image: the official one, pinned by digest (v2.4.1). It holds a single binary
+  # Image: the official one, pinned by digest (v2.5.0). It holds a single binary
   # and no shell, so there is no init sidecar: `--single-node --default-bucket`
   # make Garage itself apply a one-node layout, create the access key
   # S3_ACCESS_KEY / S3_SECRET_KEY (the fixed key skein-api signs with), create the
@@ -151,7 +151,7 @@ services:
   # no shell, so the check runs in the (already pinned) Valkey image.
   garage-settings-check:
     profiles: ["garage"]
-    image: valkey/valkey:9.1.2-alpine@sha256:48332870af354a799964c0012ae1194a0bf2bf894eb508f945810596dc2d8d11
+    image: valkey/valkey:9.1.3-alpine@sha256:bf09d58e96d6b4524a15396b65b242bbe18beebbcc15a04d8ee75ddac62fae0b
     entrypoint: ["/bin/sh", "-c"]
     environment:
       GARAGE_RPC_SECRET: ${GARAGE_RPC_SECRET:-}
@@ -171,7 +171,7 @@ services:
 
   garage:
     profiles: ["garage"]
-    image: ${GARAGE_IMAGE:-dxflrs/garage:v2.4.1@sha256:9c96caa2612d3411acc5b0e6701fb238dbfba33e533a6d7d3d811a4b12d0d020}
+    image: ${GARAGE_IMAGE:-dxflrs/garage:v2.5.0@sha256:677e5b758e4425a325b811c425c026bf35a4bf42f7ddbaa773de3f4fd779a5a5}
     command: ["/garage", "server", "--single-node", "--default-bucket"]
     depends_on:
       garage-settings-check:
@@ -208,9 +208,11 @@ services:
   # exactly like Garage's; every other port of the process (master, filer, WebDAV,
   # admin UI, ...) stays inside the container and is not published.
   # Credentials: the identity of skein-api is the config `seaweedfs-s3`, written by
-  # Compose from S3_ACCESS_KEY / S3_SECRET_KEY. It has Read, List, Write and
-  # Tagging, no Admin, so the key cannot create buckets: the bucket S3_BUCKET is
-  # created by `-bucket=` at the start of SeaweedFS (a no-op if it exists).
+  # Compose from S3_ACCESS_KEY / S3_SECRET_KEY. It has Read, List, Write, Tagging
+  # and PutBucketCors (since SeaweedFS 4.53 Write no longer covers setting the
+  # bucket CORS rule), no Admin, so the key cannot create buckets: the bucket
+  # S3_BUCKET is created by `-bucket=` at the start of SeaweedFS (a no-op if it
+  # exists).
   # The entrypoint below stops the container when either variable is empty, so it
   # never runs without a key. Keep the key to letters, digits, '.', '_' and '-'
   # (it is written into JSON). Changing the key in `.env` and restarting is enough.
@@ -218,11 +220,11 @@ services:
   # CORS: SeaweedFS answers any Origin by default; skein-api sets the bucket rule
   # from S3_CORS_ALLOWED_ORIGINS at its start. Healthy = the bucket exists (the
   # filer inside the container lists it), so skein-api waits for it.
-  # Image: the official one, pinned by digest (4.48). It starts as root, fixes the
+  # Image: the official one, pinned by digest (4.53). It starts as root, fixes the
   # ownership of /data and drops to its own user by itself.
   seaweedfs:
     profiles: ["seaweedfs"]
-    image: ${SEAWEEDFS_IMAGE:-chrislusf/seaweedfs:4.48@sha256:4e61d15fd35994cb1e43e1e553dff106794841fd9a99ade2fc8c8bfce4d7872d}
+    image: ${SEAWEEDFS_IMAGE:-chrislusf/seaweedfs:4.53@sha256:ccad23e18639c8b98cee17e7100b95830a06077b56d8e5b006d6dcf8ec5e94a0}
     entrypoint:
       - /bin/sh
       - -c
@@ -270,10 +272,10 @@ services:
   # S3_CORS_ALLOWED_ORIGINS at its start. Do not set RUSTFS_CORS_ALLOWED_ORIGINS:
   # it does not expose Content-Disposition to the browser.
   # The image has no HEALTHCHECK; healthy = /health/ready of the S3 port answers 200.
-  # Image: the official one, pinned by digest (1.0.3).
+  # Image: the official one, pinned by digest (1.0.5).
   rustfs:
     profiles: ["rustfs"]
-    image: ${RUSTFS_IMAGE:-rustfs/rustfs:1.0.3@sha256:9ca9559533b537d10482fe923288b676ad08f92a7069d9a17327fbae3cab688b}
+    image: ${RUSTFS_IMAGE:-rustfs/rustfs:1.0.5@sha256:b81d16a90ee25bd9511280127ca1471788c6e874cf0f0da759645f46b2dc1d74}
     entrypoint:
       - /bin/sh
       - -c
@@ -528,7 +530,7 @@ configs:
           {
             "name": "skein-api",
             "credentials": [{"accessKey": "${S3_ACCESS_KEY:-}", "secretKey": "${S3_SECRET_KEY:-}"}],
-            "actions": ["Read", "List", "Write", "Tagging"]
+            "actions": ["Read", "List", "Write", "Tagging", "PutBucketCors"]
           }
         ]
       }

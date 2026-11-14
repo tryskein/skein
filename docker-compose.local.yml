@@ -52,7 +52,7 @@ services:
     # below (config `postgres-extensions`) runs CREATE EXTENSION at the first
     # start of an empty volume, under the postgres superuser. In production the
     # PostgreSQL operator or provisioning step must run the equivalent.
-    image: ${POSTGRES_IMAGE:-pgvector/pgvector:pg18@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11}
+    image: ${POSTGRES_IMAGE:-pgvector/pgvector:pg18@sha256:38681dc6eaf55308e2a4c6de392d131652dcfac70e1263e35cd9b5ea3fe39782}
     environment:
       POSTGRES_USER: skein
       POSTGRES_PASSWORD: qwerty12
@@ -93,7 +93,7 @@ services:
   # Will host session storage in R5 (auth) and caching for skein-web.
   # Internal-only.
   redis:
-    image: valkey/valkey:9.1.2-alpine@sha256:48332870af354a799964c0012ae1194a0bf2bf894eb508f945810596dc2d8d11
+    image: valkey/valkey:9.1.3-alpine@sha256:bf09d58e96d6b4524a15396b65b242bbe18beebbcc15a04d8ee75ddac62fae0b
     healthcheck:
       test: ["CMD", "valkey-cli", "ping"]
       interval: 5s
@@ -114,7 +114,7 @@ services:
   # its own retry loop. Adequate for R0.2 — NATS has no schema or data
   # dependency that needs to be ready before clients start.
   nats:
-    image: nats:latest
+    image: nats:2.15.3@sha256:9d85d87039bfba33baf48de4da32a2ee572bcd6c94f6365d05733a672de49253
     command: ["-js", "-m", "8222"]
     restart: unless-stopped
 
@@ -229,7 +229,7 @@ services:
       redis:
         condition: service_healthy
       nats:
-        # nats:latest is distroless; healthcheck inside the container is not
+        # The nats image is distroless; healthcheck inside the container is not
         # possible. Consumers retry on connect.
         condition: service_started
       garage:
