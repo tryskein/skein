@@ -214,6 +214,19 @@ advisory lock, so one applies them and the others see nothing to do.
   Local`) the controller, and so skein-web, sees the balancer, and all visitors
   count together. Warn the person if they are exposed to brute-force (guessing)
   attacks.
+- **Host headers.** `/api`, `/mcp`, `/agent/v1`, `/oauth2`,
+  `/.well-known/oauth-protected-resource` and `/hub` go from the Ingress or
+  Gateway straight to skein-web, which takes the request host from the
+  `X-Forwarded-Host` of a trusted peer. The controller must therefore send the
+  public host name as `Host` and `X-Forwarded-Host`, overwriting what the
+  visitor sent, and must not pass on a visitor's `X-Forwarded-Host` or
+  `Forwarded`. ingress-nginx overwrites the `X-Forwarded-*` headers with what it
+  sees as long as `use-forwarded-headers` stays `"false"` (its default). Do not
+  set it to `"true"` unless the proxy in front of the controller itself
+  overwrites these headers. With another controller, check what it does with a
+  visitor's `X-Forwarded-Host` and `Forwarded`; with Gateway API, a
+  `RequestHeaderModifier` filter on the routes to skein-web can `set`
+  `X-Forwarded-Host` to the public host name and `remove` `Forwarded`.
 - **`SKEIN_PUBLIC_API_TRUSTED_PROXIES`** is the same decision for the public
   REST API port of skein-api: the addresses the Ingress/Gateway connects to
   skein-api from (the example uses the same pod network as for skein-web; with
@@ -353,7 +366,9 @@ Keep this short; you need facts, not a tour.
      balancer). Then they (or you, with permission) add a site that forwards
      to skein-frontend's published port, with WebSocket upgrade allowed
      (`/hub` is SignalR) and without response buffering for `/mcp` (streamed
-     responses). Pass the original `Host` header through.
+     responses). Forward only requests for the Skein host name, with that
+     name as `Host`; set `X-Forwarded-Host` to the same name and drop any
+     `X-Forwarded-Host` or `Forwarded` header the visitor sent (A2).
    - **Nothing yet.** Offer to set one up on this host (Caddy is the shortest
      path to an automatic certificate). Get a yes first: it binds 80/443.
    - HTTPS is required for a real installation: with the default
@@ -411,7 +426,12 @@ peer skein-web talks to. Do not add the address of your TLS proxy on the host;
 it is not a peer of skein-web. Your TLS proxy must set `X-Forwarded-Proto` to
 the scheme the visitor used (`https`) and must overwrite, not pass on, any value
 the visitor sent; skein-frontend forwards it to skein-web, which uses it for the
-`Secure` flag of the session cookie and for the sign-in redirect.
+`Secure` flag of the session cookie and for the sign-in redirect. In the same
+way it must send the public host name as `Host` and `X-Forwarded-Host`,
+overwriting what the visitor sent, and must not pass on a visitor's `Forwarded`
+header. skein-frontend passes the `Host` it receives to skein-web as
+`X-Forwarded-Host`, and skein-web uses it as the request host; a catch-all site
+that forwards any `Host` lets the visitor choose that host.
 
 Known limit: with a TLS proxy in front of skein-frontend, skein-web sees the
 proxy's address as the visitor's address, so the per-IP limits count all visitors
