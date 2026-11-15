@@ -24,14 +24,22 @@ across projects, machines, and sessions.
   become a shared knowledge base.
 - **On me / Delegated.** Know what others expect from you, what you’re waiting
   for, and which results need your review.
-- **A graph that drives work.** Dependencies show agents what’s ready; claims
-  keep them from taking the same task.
+- **A graph that drives work.** Dependencies show agents what’s ready; an agent
+  asks for the next ready task and claims it. The claim is atomic: two agents
+  never take the same task.
 - **Search by meaning.** Find past work and decisions even when the wording is
   different.
 - **Duplicate detection.** Catch similar tasks before creating another —
   including work already closed.
 
+Skein is an MCP server for task management for AI coding agents — Claude Code,
+Codex, Cursor and any other MCP client — self-hosted or in the cloud.
+
 **[Explore features and workflows → skein.net](https://skein.net)**
+
+**Cloud:** sign up at <https://app.skein.net/signup> → create a key in
+Settings → API keys → connect your agent to `https://app.skein.net/mcp` with
+the header `X-Skein-Api-Key`. Each team member uses their own key.
 
 Self-host Skein with Docker Compose or Kubernetes.
 
