@@ -194,7 +194,10 @@ advisory lock, so one applies them and the others see nothing to do.
 
 - **TLS** terminates at the Ingress or Gateway. The controller must send `X-Forwarded-Proto`
   (all common ones do). skein-web uses it for the `Secure` flag of the session
-  cookie and the sign-in redirect.
+  cookie and the sign-in redirect. The Ingress or Gateway must also send
+  `Strict-Transport-Security` (HSTS) on HTTPS responses, for example
+  `max-age=31536000`, and redirect HTTP to HTTPS; Skein's own servers do not
+  set it because they never see TLS.
 - **`SKEIN_TRUSTED_PROXIES`** lists the peers whose `X-Forwarded-*` headers
   skein-web may trust. Identify the addresses from which its Ingress/Gateway
   proxy connects. A proxy with a pod IP can use the relevant pod network;
@@ -356,6 +359,11 @@ Keep this short; you need facts, not a tour.
    - HTTPS is required for a real installation: with the default
      `ENVIRONMENT=production`, skein-api refuses to start unless
      `SKEIN_AGENT_PUBLIC_URL` is `https`.
+   - The TLS proxy must send `Strict-Transport-Security` (HSTS) on its HTTPS
+     responses, for example `max-age=31536000`, and redirect plain HTTP to
+     HTTPS. skein-frontend does not set the header: it never sees TLS. Without
+     HSTS a browser's first plain-HTTP request to the host can be intercepted
+     and kept on HTTP.
 5. If attachments will use a **bundled store**, the browser must reach the store
    directly (section 3, group F) — usually a second hostname such as
    `files.example.com` through the same TLS proxy. Settle DNS for it now.
