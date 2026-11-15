@@ -298,5 +298,10 @@ Please report vulnerabilities privately — see [SECURITY.md](SECURITY.md).
 ## License
 
 Skein is licensed under the [Business Source License 1.1](LICENSE).
+**Fair Source:** free for any organization of up to 99 people and for
+non-profits of any size; for-profit companies of 100 or more people pay a
+fixed yearly fee after a free period. Nobody may resell Skein as a paid hosted
+service or embed it in a paid product that competes with it. Each version
+becomes MPL 2.0 four years after its release.
 Licensing FAQ: https://skein.net/licensing.
 Trademarks: [TRADEMARKS.md](TRADEMARKS.md).
