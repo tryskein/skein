@@ -931,9 +931,12 @@ link here.
    so that the upgrade note reaches the changelog of both services.
 
 **Settings.** skein-web of release R ignores
-`ASPNETCORE_FORWARDEDHEADERS_ENABLED`: the trusted proxy is set only through
-`SKEIN_TRUSTED_PROXIES`, so an installation that relied on the flag sets that
-list before the window ([INSTALL.md](INSTALL.md), section 8, point 5).
+`ASPNETCORE_FORWARDEDHEADERS_ENABLED`; which proxies it trusts is decided only
+by `SKEIN_TRUSTED_PROXIES`, as before, and behind a chain of trusted proxies
+the client address is now read one hop deep instead of two. Any setting you
+change for release R goes into the configuration the release R pods start
+with, while GitOps is suspended (rule 1, 2.4) — there is no separate restart
+of skein-web.
 
 **Why.** Each service of release R needs the other one of release R: skein-api
 of R refuses a skein-web that does not mark its calls, and skein-web of R asks
