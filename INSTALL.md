@@ -131,6 +131,7 @@ directory names: the Cilium variant reuses the application manifests from
    `SKEIN_APP_BASE_URL`), `SKEIN_AUTH_MODE`, `S3_URL`, `S3_PUBLIC_URL`,
    `S3_BUCKET`, `S3_CORS_ALLOWED_ORIGINS` (the public address; remove the line
    if you set the bucket's CORS rule yourself), `NATS_URL`, `SKEIN_TRUSTED_PROXIES` (B5),
+   `SKEIN_ALLOWED_HOSTS` (the public host name of the Ingress or Gateway, A1),
    `SKEIN_PUBLIC_API_URL` (the public API host, A3) and
    `SKEIN_PUBLIC_API_TRUSTED_PROXIES` (B5). Any other variable of
    the three references goes in as a new key of the ConfigMap of that service;
@@ -327,8 +328,11 @@ skein-web first is a stop-all: scale both and skein-frontend to zero, wait until
 no pod is `Running` or `Terminating`, then bring skein-api up with one replica,
 and the rest after it ([DEPLOYMENT-NOTES.md](DEPLOYMENT-NOTES.md) section 2). If
 a GitOps controller reconciles these manifests, suspend it (and any image
-automation) first, or it undoes the scaling. Back up PostgreSQL and the bucket
-with the tools of the services that host them; Redis needs no backup.
+automation) first, or it undoes the scaling. The release that introduces the
+service-call marker has a rule of its own:
+[DEPLOYMENT-NOTES.md](DEPLOYMENT-NOTES.md) section 4.7. What to look for in the
+logs after an upgrade is in section 8, point 5. Back up PostgreSQL and the
+bucket with the tools of the services that host them; Redis needs no backup.
 
 ---
 
@@ -414,6 +418,13 @@ One origin serves the UI, the API, live updates and `/mcp`.
   A path is allowed if Skein is served under one (`https://example.com/skein`).
 - `SKEIN_MCP_URL` (skein-web) stays **unset**: the UI then shows
   `<origin>/mcp`, which is correct when MCP is served from the same host.
+- Sets `SKEIN_ALLOWED_HOSTS` (skein-web) = `<host>` — the host name alone,
+  without scheme, port or path. skein-web then answers any request for another
+  host name with 400 `invalid_host`; the probe paths `/healthz`, `/ready` and
+  `/metrics` are not checked. If Skein has more than one public name, list
+  them all, comma-separated. The exact syntax is in the skein-web reference
+  (`SKEIN_ALLOWED_HOSTS`). Left unset, skein-web accepts any host name and logs
+  a warning at startup; do not leave it unset.
 
 **A2. Who terminates TLS?** — settled in section 2. It also decides
 `SKEIN_TRUSTED_PROXIES` (skein-web): the addresses whose `X-Forwarded-*` headers
@@ -431,7 +442,8 @@ way it must send the public host name as `Host` and `X-Forwarded-Host`,
 overwriting what the visitor sent, and must not pass on a visitor's `Forwarded`
 header. skein-frontend passes the `Host` it receives to skein-web as
 `X-Forwarded-Host`, and skein-web uses it as the request host; a catch-all site
-that forwards any `Host` lets the visitor choose that host.
+that forwards any `Host` lets the visitor choose that host, unless
+`SKEIN_ALLOWED_HOSTS` (A1) refuses it.
 
 Known limit: with a TLS proxy in front of skein-frontend, skein-web sees the
 proxy's address as the visitor's address, so the per-IP limits count all visitors
@@ -498,8 +510,8 @@ AI agents authenticate with per-user API keys (`ska_…`) in every mode.
   setting to trust an extra CA (the same holds for an SMTP server with a
   private CA, group E). With it set, skein-web runs the
   OIDC login itself. (Without it, skein-web expects an `oauth2-proxy` in front
-  that passes trusted identity headers — a legacy setup; do not choose it for a
-  new installation unless the person already runs one.)
+  that passes trusted identity headers — a legacy setup (B2a); do not choose it
+  for a new installation unless the person already runs one.)
 - Client id and client secret → `Authentication__Oidc__ClientId`,
   `Authentication__Oidc__ClientSecret`. Both required in this mode.
 - The group a user must be in → `Authentication__Oidc__AllowedGroup` (default
@@ -526,6 +538,35 @@ and skein-web: after editing `.env`, `docker compose … up -d` recreates only
 skein-api, so also run `docker compose … restart skein-web`, otherwise it keeps
 the old mode. Switching an installation full of password users to SSO needs
 planning. Treat it as hard to change.
+
+**B2a. Only for the legacy trust-headers setup** — `keycloak` or `hybrid`
+without `Authentication__Oidc__Authority`. skein-web then does not run the
+login itself: it creates the session from the identity headers
+`X-Auth-Request-User` and `X-Auth-Request-Email` that the hop in front of it
+puts on the request. It accepts them only from a trusted peer — a connection
+that comes from an address in `SKEIN_TRUSTED_PROXIES` — and ignores them from
+any other. With `SKEIN_TRUSTED_PROXIES` empty it accepts them from nobody, so
+nobody can sign in through SSO; skein-web logs a warning about it at startup.
+
+What a trusted peer forwards is believed, so the hop that sets these headers
+must own them:
+
+- **Compose installation:** the hop is the person's oauth2-proxy in front of
+  the public entry point, before skein-frontend. skein-frontend passes the
+  headers on to skein-web, and skein-web trusts skein-frontend (A2), so
+  skein-frontend must be reachable only through that oauth2-proxy.
+- **Kubernetes:** the hop is the Ingress or Gateway with oauth2-proxy that
+  connects to skein-web (it routes `/api` and the other skein-web paths
+  straight to skein-web, B5); its addresses are the `SKEIN_TRUSTED_PROXIES`
+  of B5.
+- In both, the hop must set `X-Auth-Request-User` and `X-Auth-Request-Email`
+  itself, from the identity it has verified, and must overwrite or remove the
+  values a visitor sent. A hop that passes a visitor's values on lets that
+  visitor sign in as anyone, administrators included, and Skein cannot tell
+  such a request from a real sign-in.
+
+The modes `local` and native OIDC (`Authentication__Oidc__Authority` set) need
+no proxy in front of skein-web, and this requirement does not apply to them.
 
 ### Group C — the first administrator
 
@@ -848,6 +889,7 @@ tell them the exact `.env` lines to fill in themselves.
    # address
    SKEIN_AGENT_PUBLIC_URL=https://skein.example.com
    SKEIN_APP_BASE_URL=https://skein.example.com
+   SKEIN_ALLOWED_HOSTS=skein.example.com
    # SKEIN_TRUSTED_PROXIES stays unset: the compose default is right (A2)
    # public REST API on its own host name (A3); the trusted proxies stay unset
    # for a TLS proxy on this host
@@ -969,6 +1011,21 @@ The service names below are those of the compose file: `skein-api`, `skein-web`,
    sends only some paths to skein-frontend, send `/agent/v1/` there too.
 8. **SSO only:** log out and in again; confirm the browser was sent to the IdP
    with an `https://<host>/api/auth/oidc-callback` redirect URI.
+9. **Host names (`SKEIN_ALLOWED_HOSTS`, A1).** A wrong value does not stop
+   anything from becoming ready — the probe paths are not checked — while every
+   other request is refused, so check both directions:
+
+   ```bash
+   # the public name passes the whole chain: 200
+   curl -sS -o /dev/null -w '%{http_code}\n' https://<host>/api/auth/config
+   # another name is refused by skein-web: 400 with the error code invalid_host
+   docker compose -f docker-compose.production.yml exec skein-web \
+     curl -sS -H 'Host: not-skein.invalid' http://localhost:8080/api/auth/config
+   ```
+
+   If the first answers 400 `invalid_host`, the public name is missing from
+   `SKEIN_ALLOWED_HOSTS`. If the second does not answer 400 `invalid_host`,
+   the setting is not reaching skein-web.
 
 ### If something fails
 
@@ -1042,7 +1099,20 @@ Tell the person, in one short message:
    - migrations run automatically when skein-api starts; never run two
      versions of skein-api against the same database at once;
    - a failed upgrade is fixed forward or by restoring the backup — rolling the
-     image back does not roll the database back.
+     image back does not roll the database back;
+   - the release that introduces the service-call marker has a rule of its own:
+     [DEPLOYMENT-NOTES.md](DEPLOYMENT-NOTES.md) section 4.7;
+   - after the upgrade, read the startup log of skein-web. A warning that
+     `SKEIN_ALLOWED_HOSTS` is empty means skein-web still accepts any host
+     name: set it to the public host name (A1) and restart skein-web with
+     the new value. In the legacy trust-headers setup (B2a), a warning that
+     `SKEIN_TRUSTED_PROXIES` is empty means skein-web accepts the identity
+     headers from nobody and SSO sign-in does not work: set it as A2 says
+     (in Compose the compose-network default, the network skein-frontend
+     connects from; in Kubernetes the addresses of the hop, B5 and B2a) and
+     restart skein-web. With Compose the restart is `docker compose … up -d`;
+     in Kubernetes, apply the changed ConfigMap and
+     `kubectl -n <namespace> rollout restart deployment/skein-web`.
 6. **Backups** (offer to set up a nightly job):
    - PostgreSQL: `docker compose … exec -T postgres pg_dump -U skein -Fc skein > skein-$(date +%F).dump`;
    - attachments: the volume of the bundled store (`garage-data`, `seaweedfs-data`
