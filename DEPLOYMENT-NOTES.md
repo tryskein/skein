@@ -810,6 +810,9 @@ no outage, but the web rollout waits until the api is upgraded. The next
 skein-api release removes `/api/v1` from the main port; a web older than this
 release does not work against it.
 
+For release R, which also introduces the service-call marker, this order does
+not apply: follow 4.7.
+
 **How to check:** after the rollout every skein-web pod is ready (its startup
 call to `/ui/v1/internal/instance-config` succeeded), and the UI still works in
 a browser tab that was open before the release.
@@ -885,6 +888,78 @@ columns and their meaning, so running it on the migrated schema is not
 supported. Run the backup gate of 2.3 before the window all the same: it
 protects the data if the migration itself fails; it is not a way back to the
 older release once this one has served.
+
+### 4.7 The release that introduces the service-call marker: release R
+
+Release R is the first release in which skein-web marks its own calls to
+skein-api with the header `X-Skein-Service-Call: 1`, and skein-api refuses the
+service routes of its internal API without it (`403 service_call_required`).
+The same release R carries the move of the internal API to `/ui/v1` and the
+migrations of the public REST API described in this section. This subsection is
+the only place where the rollout of release R is written down; other documents
+link here.
+
+**Required — the release rule for R.**
+
+1. **A rollout with downtime.** Before the release tags are published, suspend
+   GitOps reconciliation and automated image updates (2.4). Stop every replica
+   of skein-web and skein-api. Start the new images only when no pod of either
+   service is `Running` or `Terminating` (2.2); then start both. Lift the
+   suspension only once the desired state in the GitOps repository already
+   names the release R images for both skein-web and skein-api, so that a
+   reconciliation cannot bring a pod back on skein-web 1.0.1 or skein-api
+   1.1.0. While the desired state still names the previous pair, the
+   suspension stays.
+2. **No mixed pair, in either direction.** skein-web without the marker against
+   skein-api with the check does not work (first symptom below). skein-web of
+   release R against skein-api 1.1.0 does not find `/ui/v1` (second symptom
+   below). The order of 4.2 (skein-api first) and the order the marker needs
+   (skein-web first) are opposite, so there is no rolling order that works: for
+   release R this subsection replaces the order of 4.2.
+3. **The gates of 3.1 do not apply.** The backup for the spaces migration and
+   the active-administrator check of 3.1 belong to the spaces release, not to
+   release R. The backup gate of 2.3 for the migrations of this section applies
+   as 4.6 says.
+4. **No rollback below R.** Release R is forward-only, as 4.6 says: a fix is the
+   next release, never a return of the images to skein-web 1.0.1 or skein-api
+   1.1.0.
+5. **The two symptoms of a broken rule differ** — each is described below on
+   its own.
+6. **A line for the person who prepares the release.** The commit bodies in
+   skein-web and skein-api that introduce the marker carry the line
+   `Changelog (upgrade notes): stop-all skein-web and skein-api; forward-only, see DEPLOYMENT-NOTES`,
+   so that the upgrade note reaches the changelog of both services.
+
+**Why.** Each service of release R needs the other one of release R: skein-api
+of R refuses a skein-web that does not mark its calls, and skein-web of R asks
+for a prefix that skein-api 1.1.0 does not serve. Any moment with both versions
+running is an outage of sign-in, and a GitOps reconciliation or an automated
+image update produces exactly such a moment by itself.
+
+**Symptom 1 — skein-web without the marker against skein-api of R.** This is
+what a skein-web of an earlier release shows (for example 1.0.1 left running,
+or brought back by a reconciliation). The running process does not exit, but
+sign-in, account provisioning, the hub access check and `GET /api/auth/config`
+fail; from outside, `GET /api/auth/config` answers 503 with the error
+`upstream_unavailable`. After a restart skein-web does not become ready: its
+startup ends when the startup window runs out, and the last failure it reports
+is HTTP 403 — nothing points at a wrong address. skein-api logs a warning with
+the code `service_call_required` for every such call. Cause: the release rule
+for R was broken — skein-web was not moved to release R together with
+skein-api. Fix: stop-all and start skein-web of release R (rule 1).
+
+**Symptom 2 — skein-web of R against skein-api 1.1.0.** skein-web exits at
+startup at once, without waiting for the startup window: reading the
+installation settings answers HTTP 404, and the message tells you to check the
+address in `SKEIN_API_URL`. The address is right; skein-api 1.1.0 does not serve
+`/ui/v1`. Cause: the release rule for R was broken — skein-web of R started
+while skein-api 1.1.0 was still serving. Fix: stop-all and start skein-api of
+release R (rule 1).
+
+**How to check:** after the window every skein-web and skein-api pod runs the
+release R image and is ready, sign-in works, skein-api logs no warning with the
+code `service_call_required`, and the GitOps desired state names the release R
+images of both services.
 
 ---
 
