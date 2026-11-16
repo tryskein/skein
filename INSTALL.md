@@ -1121,12 +1121,14 @@ Tell the person, in one short message:
      restart skein-web. With Compose the restart is `docker compose … up -d`;
      in Kubernetes, apply the changed ConfigMap and
      `kubectl -n <namespace> rollout restart deployment/skein-web`;
-   - `ASPNETCORE_FORWARDEDHEADERS_ENABLED` no longer has any effect; the
-     trusted proxy is set only through `SKEIN_TRUSTED_PROXIES`. If the
-     installation relied on that flag to accept `X-Forwarded-*` (the client
-     address, scheme and host) and left `SKEIN_TRUSTED_PROXIES` unset, skein-web
-     now ignores those headers: set `SKEIN_TRUSTED_PROXIES` to the proxy
-     addresses (A2, B5), remove the flag and restart skein-web as above.
+   - `ASPNETCORE_FORWARDEDHEADERS_ENABLED` no longer has any effect. Which
+     proxies skein-web trusts is decided, as before, only by
+     `SKEIN_TRUSTED_PROXIES`, and with that list empty skein-web still takes
+     only the scheme from `X-Forwarded-*`. The one change: the flag used to add
+     a second forwarded-headers pass, so behind a chain of several trusted
+     proxies the client address was taken one hop further back; now
+     `X-Forwarded-For` is read exactly one hop deep. You may remove the flag;
+     nothing has to be set because of this.
 6. **Backups** (offer to set up a nightly job):
    - PostgreSQL: `docker compose … exec -T postgres pg_dump -U skein -Fc skein > skein-$(date +%F).dump`;
    - attachments: the volume of the bundled store (`garage-data`, `seaweedfs-data`
