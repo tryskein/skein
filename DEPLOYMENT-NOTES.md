@@ -946,15 +946,18 @@ startup ends when the startup window runs out, and the last failure it reports
 is HTTP 403 — nothing points at a wrong address. skein-api logs a warning with
 the code `service_call_required` for every such call. Cause: the release rule
 for R was broken — skein-web was not moved to release R together with
-skein-api. Fix: stop-all and start skein-web of release R (rule 1).
+skein-api. Fix: run rule 1 — stop both services, wait until no pod of
+either is `Running` or `Terminating` (2.2), then start both on the release R
+images.
 
 **Symptom 2 — skein-web of R against skein-api 1.1.0.** skein-web exits at
 startup at once, without waiting for the startup window: reading the
 installation settings answers HTTP 404, and the message tells you to check the
 address in `SKEIN_API_URL`. The address is right; skein-api 1.1.0 does not serve
 `/ui/v1`. Cause: the release rule for R was broken — skein-web of R started
-while skein-api 1.1.0 was still serving. Fix: stop-all and start skein-api of
-release R (rule 1).
+while skein-api 1.1.0 was still serving. Fix: run rule 1 — stop both
+services, wait until no pod of either is `Running` or `Terminating` (2.2), then
+start both on the release R images.
 
 **How to check:** after the window every skein-web and skein-api pod runs the
 release R image and is ready, sign-in works, skein-api logs no warning with the
