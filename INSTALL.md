@@ -1117,7 +1117,9 @@ Tell the person, in one short message:
      `SKEIN_TRUSTED_PROXIES` is empty means skein-web accepts the identity
      headers from nobody and SSO sign-in does not work: set it as A2 says
      (in Compose the compose-network default, the network skein-frontend
-     connects from; in Kubernetes the addresses of the hop, B5 and B2a) and
+     connects from — do not add the address of the TLS proxy on the host; in
+     Kubernetes the addresses the Ingress or Gateway connects from, B5 and
+     B2a) and
      restart skein-web. With Compose the restart is `docker compose … up -d`;
      in Kubernetes, apply the changed ConfigMap and
      `kubectl -n <namespace> rollout restart deployment/skein-web`;
