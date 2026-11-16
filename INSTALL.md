@@ -1011,21 +1011,29 @@ The service names below are those of the compose file: `skein-api`, `skein-web`,
    sends only some paths to skein-frontend, send `/agent/v1/` there too.
 8. **SSO only:** log out and in again; confirm the browser was sent to the IdP
    with an `https://<host>/api/auth/oidc-callback` redirect URI.
-9. **Host names (`SKEIN_ALLOWED_HOSTS`, A1).** A wrong value does not stop
-   anything from becoming ready — the probe paths are not checked — while every
-   other request is refused, so check both directions:
+9. **Host names (`SKEIN_ALLOWED_HOSTS`, A1).** Two different failures:
+
+   - **A value the syntax rejects** (a scheme, port, path, `*`, or nothing
+     left after the commas; the syntax is in the skein-web reference) stops
+     skein-web at startup, and its log names `SKEIN_ALLOWED_HOSTS` and the
+     rejected entry. skein-web never becomes ready; fix the value and start
+     it again.
+   - **A valid list without the public name** stops nothing: skein-web becomes
+     ready, because the probe paths are not checked, while every other
+     request for the public name gets 400 `invalid_host`. So check both
+     directions:
 
    ```bash
-   # the public name passes the whole chain: 200
-   curl -sS -o /dev/null -w '%{http_code}\n' https://<host>/api/auth/config
-   # another name is refused by skein-web: 400 with the error code invalid_host
+   # the public name passes the whole chain: the body, then 200
+   curl -sS -w '\n%{http_code}\n' https://<host>/api/auth/config
+   # another name is refused by skein-web: a body with invalid_host, then 400
    docker compose -f docker-compose.production.yml exec skein-web \
-     curl -sS -H 'Host: not-skein.invalid' http://localhost:8080/api/auth/config
+     curl -sS -w '\n%{http_code}\n' -H 'Host: not-skein.invalid' http://localhost:8080/api/auth/config
    ```
 
-   If the first answers 400 `invalid_host`, the public name is missing from
-   `SKEIN_ALLOWED_HOSTS`. If the second does not answer 400 `invalid_host`,
-   the setting is not reaching skein-web.
+   If the first ends in 400 and its body names `invalid_host`, the public name
+   is missing from `SKEIN_ALLOWED_HOSTS`. If the second ends in 200, the
+   setting is not reaching skein-web (it is unset or empty there).
 
 ### If something fails
 
