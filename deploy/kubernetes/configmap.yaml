@@ -104,3 +104,8 @@ data:
   # pod inside the trusted range can otherwise forge these headers. Details and
   # a known limit: INSTALL.md, Target B.
   SKEIN_TRUSTED_PROXIES: "10.244.0.0/16"
+
+  # The public host names skein-web answers for; any other host name gets 400
+  # invalid_host (probes are not checked). The same name as the host of the
+  # Ingress in ingress.yaml (or the Gateway listener in the Cilium variant).
+  SKEIN_ALLOWED_HOSTS: "skein.example.com"

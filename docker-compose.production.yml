@@ -461,6 +461,9 @@ services:
       # compose network, so by default that network is the trusted proxy.
       # See INSTALL.md before relying on per-IP limits behind a TLS proxy.
       SKEIN_TRUSTED_PROXIES: ${SKEIN_TRUSTED_PROXIES:-${SKEIN_NETWORK_SUBNET:-172.29.88.0/24}}
+      # The public host names skein-web answers for (INSTALL.md, A1); unset
+      # accepts any host name.
+      SKEIN_ALLOWED_HOSTS:
       SKEIN_API_STARTUP_TIMEOUT_SECONDS:
       SKEIN_MCP_URL:
       SKEIN_MCP_UPSTREAM_HEADERS_TIMEOUT_SECONDS:
