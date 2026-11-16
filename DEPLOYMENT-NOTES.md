@@ -930,6 +930,11 @@ link here.
    `Changelog (upgrade notes): stop-all skein-web and skein-api; forward-only, see DEPLOYMENT-NOTES`,
    so that the upgrade note reaches the changelog of both services.
 
+**Settings.** skein-web of release R ignores
+`ASPNETCORE_FORWARDEDHEADERS_ENABLED`: the trusted proxy is set only through
+`SKEIN_TRUSTED_PROXIES`, so an installation that relied on the flag sets that
+list before the window ([INSTALL.md](INSTALL.md), section 8, point 5).
+
 **Why.** Each service of release R needs the other one of release R: skein-api
 of R refuses a skein-web that does not mark its calls, and skein-web of R asks
 for a prefix that skein-api 1.1.0 does not serve. Any moment with both versions
