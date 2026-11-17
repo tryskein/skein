@@ -1,0 +1,50 @@
+schema = 1
+root = ".."
+
+[[source]]
+repo = "."
+
+[[source]]
+repo = "../skein-api"
+dest = "projects/skein-api"
+
+[[source]]
+repo = "../skein-web"
+dest = "projects/skein-web"
+
+[[source]]
+repo = "../skein-frontend"
+dest = "projects/skein-frontend"
+exclude = ["node_modules/**"]
+
+[snapshot]
+max_mib = 512
+
+[limits]
+max_cpu = 12
+
+[defaults]
+adapter = "python"
+image = "python:3.12-bookworm"
+prepare_image = true
+network = "grant"
+broker = true
+broker_cpu = 9
+broker_memory_mib = 12288
+cpu = 1
+memory_mib = 1024
+timeout_seconds = 5400
+test_timeout_seconds = 3500
+
+# Product e2e: builds the three images from the sibling working trees and runs
+# the Playwright suite against a live stack. The harness is started by a wrapper
+# test because progon has no adapter for plain scripts.
+[kind.e2e]
+env = { HOST_WORKSPACE = "/work/repo" }
+prepare = [
+  "docker run --rm --user \"$(id -u):$(id -g)\" -e HOME=/tmp -v /work/repo/projects/skein-frontend:/w -w /w node:22-bookworm npm ci --no-audit --no-fund",
+]
+[kind.e2e.options]
+mode = "unittest-files"
+start = ".progon"
+pattern = "e2e_test.py"

@@ -136,6 +136,28 @@ by hand; see `RELEASING.md`.
 Inside a devcontainer, export `HOST_WORKSPACE` — the path of this directory as
 the Docker daemon sees it — before running the harnesses.
 
+### Running on the test VMs (progon)
+
+The profile `.progon/skein.toml` runs the product e2e suite:
+
+```bash
+progon skein e2e
+```
+
+The snapshot holds this repository plus the working trees of skein-api,
+skein-web and skein-frontend (taken from the sibling directories, placed under
+`projects/`), so the harness builds all three images from them. The kind
+installs the frontend dependencies with `npm ci`, runs `scripts/e2e-test.sh`
+through the small wrapper test `.progon/e2e_test.py` (progon has no adapter for
+plain scripts) and is green only when the harness is: the harness itself fails a
+run that executed no Playwright test. It needs the broker room declared in the
+profile (9 CPUs and 12 GiB beyond the runner). There is no narrowed form of the
+wrapper; to run a single scenario call the harness directly on a machine with
+Docker, `./scripts/e2e-test.sh -- -g '<test title>'`.
+
+The integration harness of skein-api is covered by `progon api integ` in that
+repository.
+
 ### Definition of done
 
 - unit tests — after every round of edits, in the repository you changed;

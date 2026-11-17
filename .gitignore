@@ -34,3 +34,5 @@ docs/coderev/
 docs/research/
 docs/plan/
 docs/tasks/
+
+.progon/config.local.toml
