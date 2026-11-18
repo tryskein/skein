@@ -151,7 +151,10 @@ What you need:
 
 - a Linux server with Docker and the Compose v2 plugin, version 2.23.1 or newer;
 - a public HTTPS address for Skein. The guide asks who terminates HTTPS in front
-  of it;
+  of it. The session cookie `__Host-skein.sid` is `Secure`, so plain HTTP gives
+  no working sign-in; `SKEIN_ALLOW_INSECURE_HTTP` (cookie `skein.sid`) exists
+  only for local work in the `Development` environment, see
+  [INSTALL.md](INSTALL.md);
 - access for the agent to the server (SSH), or run the agent on the server itself.
 
 Pin the version: set `SKEIN_VERSION` in `.env` to a Skein release such as
@@ -195,6 +198,12 @@ Every variable of each service is described in its own reference:
 3. Set the new `SKEIN_VERSION` in `.env`, apply any `.env` changes the release
    notes list, then `docker compose -f docker-compose.production.yml pull` and
    `docker compose -f docker-compose.production.yml up -d`.
+
+The release that changes the session format is rolled out with a stop (Kubernetes
+uses `strategy: Recreate` for it): old and new skein-web never run together, and
+everyone signs in once more. After a rollback delete the Redis key
+`skein:session-format` before rolling forward again; details in
+[INSTALL.md](INSTALL.md).
 
 Database migrations run automatically when skein-api starts. Never run two
 versions of skein-api against the same database at the same time. Rolling the

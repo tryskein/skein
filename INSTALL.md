@@ -323,7 +323,13 @@ a reload or another sign-in. Merely seeing two Ready pods does not verify the
 live feed or cookie affinity.
 
 Upgrades: change the three `newTag` values and apply. Ordinary releases are a
-rolling update (`maxUnavailable: 0`). A release whose notes demand stopping skein-api and
+rolling update (`maxUnavailable: 0`); the exception is the release that changes
+the session format (cookie `__Host-skein.sid`), where `skein-web.yaml` uses
+`strategy: Recreate`: skein-web stops, then starts, people sign in once more,
+and old and new replicas never run together. If you roll back, people sign in
+again; delete the Redis key `skein:session-format` before rolling forward
+again. If a GitOps controller manages the manifest, return it to RollingUpdate
+in a separate change after that release. A release whose notes demand stopping skein-api and
 skein-web first is a stop-all: scale both and skein-frontend to zero, wait until
 no pod is `Running` or `Terminating`, then bring skein-api up with one replica,
 and the rest after it ([DEPLOYMENT-NOTES.md](DEPLOYMENT-NOTES.md) section 2). If
@@ -383,6 +389,17 @@ Keep this short; you need facts, not a tour.
      HTTPS. skein-frontend does not set the header: it never sees TLS. Without
      HSTS a browser's first plain-HTTP request to the host can be intercepted
      and kept on HTTP.
+   - The session cookie is named `__Host-skein.sid` and is `Secure`, so a
+     browser keeps it only over HTTPS. Do not set `SKEIN_ALLOW_INSECURE_HTTP`
+     on a real installation: it is for local work over plain HTTP in the
+     `Development` environment only (skein-web refuses to start with it
+     anywhere else), it switches the cookie to `skein.sid` without `Secure`,
+     and a self-signed HTTPS certificate does not need it. Plain HTTP without
+     it is a misconfiguration that looks like a working sign-in: the sign-in
+     response is successful, but the browser drops the cookie, so no session
+     exists afterwards. The HTTP response does not confirm a browser session;
+     skein-web logs a warning, and the cure is HTTPS. The setting is described
+     in the [skein-web reference](https://github.com/tryskein/skein-web/blob/main/docs/env-reference.md).
 5. If attachments will use a **bundled store**, the browser must reach the store
    directly (section 3, group F) — usually a second hostname such as
    `files.example.com` through the same TLS proxy. Settle DNS for it now.
@@ -1108,6 +1125,16 @@ Tell the person, in one short message:
      versions of skein-api against the same database at once;
    - a failed upgrade is fixed forward or by restoring the backup — rolling the
      image back does not roll the database back;
+   - the release that changes the session format (the cookie becomes
+     `__Host-skein.sid`; the plain-HTTP development cookie is `skein.sid`) is
+     rolled out with a stop: never run old and new skein-web side by side.
+     Compose replaces the single skein-web container, which is that stop.
+     Every session issued before the update ends and each person signs in once
+     more; other data is kept. If you roll back to the former version, people
+     sign in again, and no session issued before the update or while the new
+     version ran is accepted. Before rolling forward again, delete the key
+     `skein:session-format` in Redis; sessions the new version issued and that
+     survived the rollback stay valid, because the new version issued them;
    - the release that introduces the service-call marker has a rule of its own:
      [DEPLOYMENT-NOTES.md](DEPLOYMENT-NOTES.md) section 4.7;
    - after the upgrade, read the startup log of skein-web. A warning that
