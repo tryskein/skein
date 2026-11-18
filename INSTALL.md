@@ -253,7 +253,7 @@ advisory lock, so one applies them and the others see nothing to do.
   It does not add another Deployment. The Cilium variant uses `skein-web` and
   sets `sessionPersistence` on the `/hub` HTTPRoute rule. The entry point sets
   the `skein-hub` routing cookie; it is
-  separate from the `skein.sid` authentication cookie. Redis shares sessions,
+  separate from the session authentication cookie. Redis shares sessions,
   keys and messages, but does not replace connection affinity. Route `/hub`
   directly to skein-web as the examples do: affinity to a frontend replica alone
   does not select the BFF replica behind its nginx proxy. A disconnected tab
