@@ -800,11 +800,16 @@ existing data.
   (`mailto:<real contact>` or an `https:` URL). Without them the UI hides the
   push option. Recommend turning it on.
 - **Checking new passwords against known leaks** (Have I Been Pwned range API) —
-  on by default (`SKEIN_PWNED_PASSWORDS_ENABLED`); only the first five hex
-  characters of the password's SHA-1 leave the server, and an unreachable
-  service is skipped without blocking. Ask whether the server may call that
-  third party; if not, set `SKEIN_PWNED_PASSWORDS_ENABLED=false` (or point
-  `SKEIN_PWNED_PASSWORDS_BASE_URL` at a mirror).
+  on by default (`SKEIN_PWNED_PASSWORDS_ENABLED`) for the passwords users set
+  themselves (signup, invitation, reset, password change; not those an admin
+  sets); only the first five hex characters of the password's SHA-1 leave the
+  server, and an unreachable service is skipped without blocking. Ask whether
+  the server may call that third party. If not, set
+  `SKEIN_PWNED_PASSWORDS_ENABLED=false` — no lookup at all, neither from the
+  server nor from the browser — or point `SKEIN_PWNED_PASSWORDS_BASE_URL` at a
+  mirror of the corpus (the variable is passed to skein-api by the production
+  compose file; set it in `.env`). With a mirror the password page's browser
+  hint is switched off too, so nothing reaches the public service.
 - **Instance name in monitoring** — `SKEIN_INSTANCE_NAME` (default `skein`),
   useful if several installations report to one Prometheus/Loki.
 
