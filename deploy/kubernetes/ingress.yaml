@@ -13,9 +13,10 @@
 #     public API off the internet, leave its Ingress out or restrict it here:
 #     skein-api itself accepts any valid API key on that port.
 #   - TLS: terminate https here. skein-web needs X-Forwarded-Proto from the
-#     controller to set the Secure flag of the session cookie; every common
-#     controller sends it. The `tls` block names a Secret you provide (or one
-#     your certificate manager fills).
+#     controller for the sign-in redirect; every common controller sends it.
+#     The session cookie is always Secure and does not depend on the header.
+#     The `tls` block names a Secret you provide (or one your certificate
+#     manager fills).
 #
 # CONTROLLER-SPECIFIC SETTINGS. These annotations are for ingress-nginx.
 # Another controller needs equivalent routing and cookie affinity; merely
