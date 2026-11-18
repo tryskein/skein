@@ -16,11 +16,11 @@ spec:
   # Keep affinity enabled when scaling. All replicas share Redis sessions,
   # keys and the backplane.
   replicas: 2
+  # Recreate for this release only: the session format changes, and old and new
+  # replicas must not serve side by side. Go back to RollingUpdate
+  # (maxUnavailable: 0, maxSurge: 1) in a separate change after this release.
   strategy:
-    type: RollingUpdate
-    rollingUpdate:
-      maxUnavailable: 0
-      maxSurge: 1
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: skein-web
