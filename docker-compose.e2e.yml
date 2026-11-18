@@ -155,6 +155,8 @@ services:
     environment:
       PORT: "8080"
       ASPNETCORE_ENVIRONMENT: Development
+      # The e2e stack is served over plain http; explicit opt-in, Development only.
+      SKEIN_ALLOW_INSECURE_HTTP: "true"
       SKEIN_API_URL: http://skein-api:5100
       SKEIN_INTERNAL_SECRET: e2e-internal-secret-change-me-32chars-minimum
       REDIS_URL: redis://redis:6379

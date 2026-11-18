@@ -278,6 +278,9 @@ services:
     environment:
       PORT: "8080"
       ASPNETCORE_ENVIRONMENT: Development
+      # The local stack is served over plain http; this explicit opt-in lets
+      # the session cookie work there. Valid only in Development.
+      SKEIN_ALLOW_INSECURE_HTTP: "true"
       # URL of the internal API — used by the reverse proxy in R1.1+.
       SKEIN_API_URL: http://skein-api:5100
       # R1.1b BFF auth wiring. SKEIN_INTERNAL_SECRET must match skein-api
