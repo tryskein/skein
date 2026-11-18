@@ -800,8 +800,11 @@ existing data.
   (`mailto:<real contact>` or an `https:` URL). Without them the UI hides the
   push option. Recommend turning it on.
 - **Checking new passwords against known leaks** (Have I Been Pwned range API) —
-  `SKEIN_PWNED_PASSWORDS_ENABLED=true`. Off by default because it calls a third
-  party on each password change; ask whether the server may do that.
+  on by default (`SKEIN_PWNED_PASSWORDS_ENABLED`); only the first five hex
+  characters of the password's SHA-1 leave the server, and an unreachable
+  service is skipped without blocking. Ask whether the server may call that
+  third party; if not, set `SKEIN_PWNED_PASSWORDS_ENABLED=false` (or point
+  `SKEIN_PWNED_PASSWORDS_BASE_URL` at a mirror).
 - **Instance name in monitoring** — `SKEIN_INSTANCE_NAME` (default `skein`),
   useful if several installations report to one Prometheus/Loki.
 
