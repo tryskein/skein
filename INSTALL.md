@@ -194,8 +194,10 @@ advisory lock, so one applies them and the others see nothing to do.
 **B5. TLS, the client address, and replicas**
 
 - **TLS** terminates at the Ingress or Gateway. The controller must send `X-Forwarded-Proto`
-  (all common ones do). skein-web uses it for the `Secure` flag of the session
-  cookie and the sign-in redirect. The Ingress or Gateway must also send
+  (all common ones do). skein-web uses it for the sign-in redirect. The
+  session cookie `__Host-skein.sid` is always `Secure`, whatever this header
+  says; only `SKEIN_ALLOW_INSECURE_HTTP` (Development only) switches that off.
+  The Ingress or Gateway must also send
   `Strict-Transport-Security` (HSTS) on HTTPS responses, for example
   `max-age=31536000`, and redirect HTTP to HTTPS; Skein's own servers do not
   set it because they never see TLS.
@@ -454,7 +456,9 @@ peer skein-web talks to. Do not add the address of your TLS proxy on the host;
 it is not a peer of skein-web. Your TLS proxy must set `X-Forwarded-Proto` to
 the scheme the visitor used (`https`) and must overwrite, not pass on, any value
 the visitor sent; skein-frontend forwards it to skein-web, which uses it for the
-`Secure` flag of the session cookie and for the sign-in redirect. In the same
+sign-in redirect. The session cookie `__Host-skein.sid` is `Secure` whatever the
+header says (only `SKEIN_ALLOW_INSECURE_HTTP`, Development only, changes that).
+In the same
 way it must send the public host name as `Host` and `X-Forwarded-Host`,
 overwriting what the visitor sent, and must not pass on a visitor's `Forwarded`
 header. skein-frontend passes the `Host` it receives to skein-web as
