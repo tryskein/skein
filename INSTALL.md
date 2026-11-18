@@ -321,7 +321,9 @@ In a signed-in browser, check that `/hub` receives the `skein-hub` cookie. Open
 the same test issue in two browsers, change its title or add a comment, and
 confirm live updates without refreshing either page. During a planned BFF
 rollout, verify that the tabs reconnect and continue receiving changes without
-a reload or another sign-in. Merely seeing two Ready pods does not verify the
+a reload or another sign-in. After the release that changes the session format
+(see Upgrades below) sign-in is required once: sign in again, then check the
+live updates. Merely seeing two Ready pods does not verify the
 live feed or cookie affinity.
 
 Upgrades: change the three `newTag` values and apply. Ordinary releases are a
