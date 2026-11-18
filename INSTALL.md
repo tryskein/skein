@@ -1142,10 +1142,11 @@ Tell the person, in one short message:
      Compose replaces the single skein-web container, which is that stop.
      Every session issued before the update ends and each person signs in once
      more; other data is kept. If you roll back to the former version, people
-     sign in again, and no session issued before the update or while the new
-     version ran is accepted. Before rolling forward again, delete the key
-     `skein:session-format` in Redis; sessions the new version issued and that
-     survived the rollback stay valid, because the new version issued them;
+     sign in again: the former version accepts no session issued before the
+     update or while the new version ran. Before rolling forward again, delete
+     the key `skein:session-format` in Redis. Once the new version is running
+     again, a session it issued earlier that survived the rollback is valid
+     again, because the new version issued it;
    - the release that introduces the service-call marker has a rule of its own:
      [DEPLOYMENT-NOTES.md](DEPLOYMENT-NOTES.md) section 4.7;
    - after the upgrade, read the startup log of skein-web. A warning that
