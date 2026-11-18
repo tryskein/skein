@@ -199,9 +199,12 @@ Every variable of each service is described in its own reference:
    notes list, then `docker compose -f docker-compose.production.yml pull` and
    `docker compose -f docker-compose.production.yml up -d`.
 
-The release that changes the session format is rolled out with a stop (Kubernetes
-uses `strategy: Recreate` for it): old and new skein-web never run together, and
-everyone signs in once more. After a rollback delete the Redis key
+The release that introduces the `__Host-skein.sid` session cookie changes the
+session format and is rolled out with a stop: old and new skein-web never run
+together, and everyone signs in once more. On Kubernetes its `skein-web.yaml`
+uses `strategy: Recreate`; if you keep your own copy of the manifests, set that
+in the same apply as the new image tags, and return to RollingUpdate in a
+separate change after that release. After a rollback delete the Redis key
 `skein:session-format` before rolling forward again; details in
 [INSTALL.md](INSTALL.md).
 

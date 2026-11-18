@@ -325,13 +325,18 @@ a reload or another sign-in. Merely seeing two Ready pods does not verify the
 live feed or cookie affinity.
 
 Upgrades: change the three `newTag` values and apply. Ordinary releases are a
-rolling update (`maxUnavailable: 0`); the exception is the release that changes
-the session format (cookie `__Host-skein.sid`), where `skein-web.yaml` uses
-`strategy: Recreate`: skein-web stops, then starts, people sign in once more,
-and old and new replicas never run together. If you roll back, people sign in
+rolling update (`maxUnavailable: 0`). The release that introduces the
+`__Host-skein.sid` session cookie changes the session format and is the
+exception: old and new skein-web replicas must never run together, so it is
+rolled out with a stop. `skein-web.yaml` of that release sets
+`spec.strategy.type: Recreate` and has no `rollingUpdate` block. If you keep your
+own copy of the manifests from an earlier release, changing the tags is not
+enough: in the same apply, set `spec.strategy.type: Recreate` in your
+`skein-web.yaml` and remove its `rollingUpdate` block (or take the manifest of
+that release). Everyone signs in once more. If you roll back, people sign in
 again; delete the Redis key `skein:session-format` before rolling forward
-again. If a GitOps controller manages the manifest, return it to RollingUpdate
-in a separate change after that release. A release whose notes demand stopping skein-api and
+again. After that release is running, put your copy back to RollingUpdate in a
+separate change, whether or not a GitOps controller manages it. A release whose notes demand stopping skein-api and
 skein-web first is a stop-all: scale both and skein-frontend to zero, wait until
 no pod is `Running` or `Terminating`, then bring skein-api up with one replica,
 and the rest after it ([DEPLOYMENT-NOTES.md](DEPLOYMENT-NOTES.md) section 2). If
