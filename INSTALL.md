@@ -335,12 +335,16 @@ rolled out with a stop. `skein-web.yaml` of that release sets
 own copy of the manifests from an earlier release, changing the tags is not
 enough: in the same apply, set `spec.strategy.type: Recreate` in your
 `skein-web.yaml` and remove its `rollingUpdate` block (or take the manifest of
-that release). Everyone signs in once more. If you roll back, people sign in
-again. Deleting the Redis key `skein:session-format` is a required step of the
-rollback: do it before rolling forward again. Rolling forward again ends every
-session, including those the new version issued before the rollback, so
-everyone signs in once more. After that release is running, put your copy back to RollingUpdate in a
-separate change, whether or not a GitOps controller manages it. A release whose notes demand stopping skein-api and
+that release). Everyone signs in once more. A rollback is rolled out with a stop
+too: the manifest of the earlier release brings back RollingUpdate, so in the
+apply that returns the earlier tags keep `spec.strategy.type: Recreate` and no
+`rollingUpdate` block. If you roll back, people sign in again. Deleting the
+Redis key `skein:session-format` is a required step of the rollback: do it
+before rolling forward again. Rolling forward again is rolled out with a stop
+as well and ends every session, including those the new version issued before
+the rollback, so everyone signs in once more. After that release is running,
+put your copy back to RollingUpdate in a separate change, whether or not a
+GitOps controller manages it. A release whose notes demand stopping skein-api and
 skein-web first is a stop-all: scale both and skein-frontend to zero, wait until
 no pod is `Running` or `Terminating`, then bring skein-api up with one replica,
 and the rest after it ([DEPLOYMENT-NOTES.md](DEPLOYMENT-NOTES.md) section 2). If
