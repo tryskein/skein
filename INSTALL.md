@@ -336,8 +336,10 @@ own copy of the manifests from an earlier release, changing the tags is not
 enough: in the same apply, set `spec.strategy.type: Recreate` in your
 `skein-web.yaml` and remove its `rollingUpdate` block (or take the manifest of
 that release). Everyone signs in once more. If you roll back, people sign in
-again; delete the Redis key `skein:session-format` before rolling forward
-again. After that release is running, put your copy back to RollingUpdate in a
+again. Deleting the Redis key `skein:session-format` is a required step of the
+rollback: do it before rolling forward again. Rolling forward again ends every
+session, including those the new version issued before the rollback, so
+everyone signs in once more. After that release is running, put your copy back to RollingUpdate in a
 separate change, whether or not a GitOps controller manages it. A release whose notes demand stopping skein-api and
 skein-web first is a stop-all: scale both and skein-frontend to zero, wait until
 no pod is `Running` or `Terminating`, then bring skein-api up with one replica,
@@ -1151,10 +1153,15 @@ Tell the person, in one short message:
      Every session issued before the update ends and each person signs in once
      more; other data is kept. If you roll back to the former version, people
      sign in again: the former version accepts no session issued before the
-     update or while the new version ran. Before rolling forward again, delete
-     the key `skein:session-format` in Redis. Once the new version is running
-     again, a session it issued earlier that survived the rollback is valid
-     again, because the new version issued it;
+     update or while the new version ran. Deleting the key
+     `skein:session-format` in Redis is a required step of the rollback: do it
+     before rolling forward again. Rolling forward again ends every session,
+     including those the new version issued before the rollback: before it
+     serves requests, the new version ends every session stored in Redis when
+     it starts, and each person signs in once more; other data is kept. The new
+     version also recognises the rollback by the sessions the former version
+     left, but not when it left none, which is why the step is required. An
+     ordinary restart ends no session;
    - the release that introduces the service-call marker has a rule of its own:
      [DEPLOYMENT-NOTES.md](DEPLOYMENT-NOTES.md) section 4.7;
    - after the upgrade, read the startup log of skein-web. A warning that
