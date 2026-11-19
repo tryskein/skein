@@ -468,6 +468,10 @@ services:
       SKEIN_API_STARTUP_TIMEOUT_SECONDS:
       SKEIN_MCP_URL:
       SKEIN_MCP_UPSTREAM_HEADERS_TIMEOUT_SECONDS:
+      # Browser session lifetimes in whole hours: without a request, and from
+      # sign-in. Unset keeps the defaults of skein-web.
+      SKEIN_SESSION_IDLE_TIMEOUT_HOURS:
+      SKEIN_SESSION_ABSOLUTE_TIMEOUT_HOURS:
       # Single sign-on (modes keycloak and hybrid).
       Authentication__Oidc__Authority:
       Authentication__Oidc__ClientId:
