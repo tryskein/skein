@@ -264,33 +264,27 @@ jobs:
             CHANGELOG.md > "$RUNNER_TEMP/CHANGELOG.new"
           mv "$RUNNER_TEMP/CHANGELOG.new" CHANGELOG.md
 
+          # The release notes are the table of service versions only. The
+          # maintainers add the upgrade notes of the changed services by hand
+          # after the release (RELEASING.md, "How a release is made").
           row() { # name previous new
-            if [ "$2" = none ]; then echo "| $1 | - | $3 | first release |"
-            elif [ "$2" = "$3" ]; then echo "| $1 | $2 | $3 | unchanged |"
-            else echo "| $1 | $2 | [$3](${base}/$1/releases/tag/$3) | changed |"; fi
+            if [ "$2" = none ]; then echo "| $1 | [$3](${base}/$1/releases/tag/$3) | first release |"
+            elif [ "$2" = "$3" ]; then echo "| $1 | $3 | unchanged |"
+            else echo "| $1 | $2 → $3 | [release notes](${base}/$1/releases/tag/$3) |"; fi
           }
           {
-            echo "Skein ${VERSION} is the set of service versions below. Run it by pinning \`SKEIN_VERSION=${VERSION}\` in your \`.env\` (the images are taken with the tag \`skein-${VERSION}\`)."
-            echo
-            echo "| Service | Previous | In this release | |"
-            echo "|---|---|---|---|"
+            if [ "$PREV_TAG" = "" ]; then
+              echo "First public release of Skein."
+              echo
+            elif [ "$LEVEL" = major ]; then
+              echo "**This is a major release.** Something breaks for people who run Skein: read the upgrade notes below and \`DEPLOYMENT-NOTES.md\` before you upgrade, and take a backup first."
+              echo
+            fi
+            echo "| Service | Version | Changes |"
+            echo "|---|---|---|"
             row skein-api "$PREV_API" "$NEW_API"
             row skein-web "$PREV_WEB" "$NEW_WEB"
             row skein-frontend "$PREV_FRONTEND" "$NEW_FRONTEND"
-            echo
-            echo "## Upgrading"
-            echo
-            echo "- Read the release notes of every changed service (links above) before you upgrade; they list environment variables and migrations that changed."
-            if [ "$LEVEL" = major ]; then
-              echo "- **This is a major release.** Something breaks for people who run Skein; follow the upgrade notes of the changed services and \`DEPLOYMENT-NOTES.md\` step by step, and take a backup first."
-            fi
-            echo "- Docker Compose: set \`SKEIN_VERSION=${VERSION}\` in \`.env\`, then \`docker compose -f docker-compose.production.yml pull\` and \`docker compose -f docker-compose.production.yml up -d\`."
-            echo "- Kubernetes: set \`newTag: skein-${VERSION}\` for the three images in \`deploy/kubernetes/kustomization.yaml\` and apply it."
-            echo "- Images: \`${REGISTRY}/skein-api:skein-${VERSION}\`, \`${REGISTRY}/skein-web:skein-${VERSION}\`, \`${REGISTRY}/skein-frontend:skein-${VERSION}\`."
-            if [ "$PREV_TAG" != "" ]; then
-              echo
-              echo "Full list of changes in this repository: ${base}/skein/compare/${PREV_TAG}...${VERSION}"
-            fi
           } > "$RUNNER_TEMP/notes.md"
 
           git config user.name "github-actions[bot]"

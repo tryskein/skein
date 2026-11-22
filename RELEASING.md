@@ -78,10 +78,15 @@ settings and only needs `SKEIN_VERSION` from it.
    4. checks that every image exists in the registry;
    5. commits the pinned versions (`versions.env`) and the changelog;
    6. tags this repository and adds the `skein-X.Y.Z` tag to the three images;
-   7. creates the GitHub Release with upgrade notes.
+   7. creates the GitHub Release with the table of service versions.
 
    If any step fails, no release is created. How to start it, and what to do
    after a failure, is in [Starting a Skein release](#starting-a-skein-release).
+4. **Upgrade notes.** The maintainers add a section `## Upgrade notes` to the
+   description of the Skein release: the `### Upgrade notes` of every changed
+   service, copied from its `CHANGELOG.md`, one part per service. A service
+   without upgrade notes is left out; when no service has any, the section is
+   not added.
 
 ## Image tags
 
@@ -139,7 +144,7 @@ gh run watch --repo tryskein/skein --exit-status <run-id>
 it stopped because nothing changed. When it succeeds, check the result:
 
 ```bash
-gh release view --repo tryskein/skein            # the latest release, with its upgrade notes
+gh release view --repo tryskein/skein            # the latest release, with its table of service versions
 git fetch --tags && git show <X.Y.Z>:versions.env # the service versions inside it
 docker buildx imagetools inspect ghcr.io/tryskein/skein-api:skein-<X.Y.Z>
 ```
@@ -174,7 +179,7 @@ step:
   different images, the run stops instead of moving a tag; fix the situation
   with the next release.
 - **Step 3 failed**: the tag and the image tags are already final. Create the
-  Release by hand: `gh release create <X.Y.Z> --verify-tag --title "Skein <X.Y.Z>" --notes "<upgrade notes>"`.
+  Release by hand: `gh release create <X.Y.Z> --verify-tag --title "Skein <X.Y.Z>" --notes "<the table of service versions>"`.
   Starting the workflow again would stop with "Nothing changed".
 
 ### One-time setup for maintainers
