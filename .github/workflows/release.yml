@@ -15,16 +15,6 @@ name: Release Skein
 on:
   workflow_dispatch:
     inputs:
-      bump_override:
-        description: >-
-          "major" forces a major bump. Allowed only when no service changed
-          and this repository alone changed in a breaking way (for example the
-          format of .env).
-        type: choice
-        options:
-          - none
-          - major
-        default: none
       first_version:
         description: >-
           Version of the very first Skein release (X.Y.Z). Used only when this
@@ -60,7 +50,6 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-      BUMP_OVERRIDE: ${{ inputs.bump_override }}
       FIRST_VERSION: ${{ inputs.first_version }}
       DRY_RUN: ${{ inputs.dry_run }}
       GHCR_RELEASE_TOKEN: ${{ secrets.GHCR_RELEASE_TOKEN }}
@@ -150,17 +139,14 @@ jobs:
             if [ "$LEVEL" = none ]; then
               # No service changed. A change to this repository alone is a patch.
               # Workflow files, the changelog and the pin file are not changes for
-              # people who run Skein.
+              # people who run Skein. A major Skein release always comes from the
+              # services (RELEASING.md, "One major version for the whole product").
               if git diff --quiet "$PREV_TAG" HEAD -- . ':(exclude).github' ':(exclude)CHANGELOG.md' ':(exclude)versions.env'; then
                 echo "::error::Nothing changed since Skein ${PREV_TAG}: the latest service releases are the same and this repository has no changes besides workflows, the changelog and versions.env. No release made."
                 exit 1
               fi
               LEVEL="patch"
-              if [ "$BUMP_OVERRIDE" = major ]; then LEVEL="major"; fi
               echo "Only this repository changed since ${PREV_TAG}: ${LEVEL} release."
-            elif [ "$BUMP_OVERRIDE" != none ]; then
-              echo "::error::bump_override applies only when no service changed. Services changed, so the bump is computed from them."
-              exit 1
             fi
 
             IFS=. read -r MA MI PA <<< "$PREV_TAG"
@@ -169,6 +155,21 @@ jobs:
               minor) VERSION="${MA}.$((MI + 1)).0" ;;
               *)     VERSION="${MA}.${MI}.$((PA + 1))" ;;
             esac
+          fi
+
+          # One major version for the whole product: every service of Skein N.x
+          # is N.x (RELEASING.md). Checked before anything is published.
+          SKEIN_MAJOR="${VERSION%%.*}"
+          behind=""
+          for pair in skein-api:API skein-web:WEB skein-frontend:FRONTEND; do
+            svc="${pair%%:*}"; new_var="NEW_${pair##*:}"
+            if [ "${!new_var%%.*}" != "$SKEIN_MAJOR" ]; then
+              behind="${behind} ${svc} ${!new_var};"
+            fi
+          done
+          if [ -n "$behind" ]; then
+            echo "::error::Skein ${VERSION} needs every service at major version ${SKEIN_MAJOR}, but:${behind} release ${SKEIN_MAJOR}.0.0 of these services first (RELEASING.md, \"One major version for the whole product\")."
+            exit 1
           fi
 
           if git rev-parse -q --verify "refs/tags/${VERSION}" > /dev/null; then
@@ -264,33 +265,27 @@ jobs:
             CHANGELOG.md > "$RUNNER_TEMP/CHANGELOG.new"
           mv "$RUNNER_TEMP/CHANGELOG.new" CHANGELOG.md
 
+          # The release notes are the table of service versions only. The
+          # maintainers add the upgrade notes of the changed services by hand
+          # after the release (RELEASING.md, "How a release is made").
           row() { # name previous new
-            if [ "$2" = none ]; then echo "| $1 | - | $3 | first release |"
-            elif [ "$2" = "$3" ]; then echo "| $1 | $2 | $3 | unchanged |"
-            else echo "| $1 | $2 | [$3](${base}/$1/releases/tag/$3) | changed |"; fi
+            if [ "$2" = none ]; then echo "| $1 | [$3](${base}/$1/releases/tag/$3) | first release |"
+            elif [ "$2" = "$3" ]; then echo "| $1 | $3 | unchanged |"
+            else echo "| $1 | $2 → $3 | [release notes](${base}/$1/releases/tag/$3) |"; fi
           }
           {
-            echo "Skein ${VERSION} is the set of service versions below. Run it by pinning \`SKEIN_VERSION=${VERSION}\` in your \`.env\` (the images are taken with the tag \`skein-${VERSION}\`)."
-            echo
-            echo "| Service | Previous | In this release | |"
-            echo "|---|---|---|---|"
+            if [ "$PREV_TAG" = "" ]; then
+              echo "First public release of Skein."
+              echo
+            elif [ "$LEVEL" = major ]; then
+              echo "**This is a major release.** Something breaks for people who run Skein: read the upgrade notes below and \`DEPLOYMENT-NOTES.md\` before you upgrade, and take a backup first."
+              echo
+            fi
+            echo "| Service | Version | Changes |"
+            echo "|---|---|---|"
             row skein-api "$PREV_API" "$NEW_API"
             row skein-web "$PREV_WEB" "$NEW_WEB"
             row skein-frontend "$PREV_FRONTEND" "$NEW_FRONTEND"
-            echo
-            echo "## Upgrading"
-            echo
-            echo "- Read the release notes of every changed service (links above) before you upgrade; they list environment variables and migrations that changed."
-            if [ "$LEVEL" = major ]; then
-              echo "- **This is a major release.** Something breaks for people who run Skein; follow the upgrade notes of the changed services and \`DEPLOYMENT-NOTES.md\` step by step, and take a backup first."
-            fi
-            echo "- Docker Compose: set \`SKEIN_VERSION=${VERSION}\` in \`.env\`, then \`docker compose -f docker-compose.production.yml pull\` and \`docker compose -f docker-compose.production.yml up -d\`."
-            echo "- Kubernetes: set \`newTag: skein-${VERSION}\` for the three images in \`deploy/kubernetes/kustomization.yaml\` and apply it."
-            echo "- Images: \`${REGISTRY}/skein-api:skein-${VERSION}\`, \`${REGISTRY}/skein-web:skein-${VERSION}\`, \`${REGISTRY}/skein-frontend:skein-${VERSION}\`."
-            if [ "$PREV_TAG" != "" ]; then
-              echo
-              echo "Full list of changes in this repository: ${base}/skein/compare/${PREV_TAG}...${VERSION}"
-            fi
           } > "$RUNNER_TEMP/notes.md"
 
           git config user.name "github-actions[bot]"
