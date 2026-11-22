@@ -335,10 +335,16 @@ rolled out with a stop. `skein-web.yaml` of that release sets
 own copy of the manifests from an earlier release, changing the tags is not
 enough: in the same apply, set `spec.strategy.type: Recreate` in your
 `skein-web.yaml` and remove its `rollingUpdate` block (or take the manifest of
-that release). Everyone signs in once more. If you roll back, people sign in
-again; delete the Redis key `skein:session-format` before rolling forward
-again. After that release is running, put your copy back to RollingUpdate in a
-separate change, whether or not a GitOps controller manages it. A release whose notes demand stopping skein-api and
+that release). Everyone signs in once more. A rollback is rolled out with a stop
+too: the manifest of the earlier release brings back RollingUpdate, so in the
+apply that returns the earlier tags keep `spec.strategy.type: Recreate` and no
+`rollingUpdate` block. If you roll back, people sign in again. Deleting the
+Redis key `skein:session-format` is a required step of the rollback: do it
+before rolling forward again. Rolling forward again is rolled out with a stop
+as well and ends every session, including those the new version issued before
+the rollback, so everyone signs in once more. After that release is running,
+put your copy back to RollingUpdate in a separate change, whether or not a
+GitOps controller manages it. A release whose notes demand stopping skein-api and
 skein-web first is a stop-all: scale both and skein-frontend to zero, wait until
 no pod is `Running` or `Terminating`, then bring skein-api up with one replica,
 and the rest after it ([DEPLOYMENT-NOTES.md](DEPLOYMENT-NOTES.md) section 2). If
@@ -800,8 +806,16 @@ existing data.
   (`mailto:<real contact>` or an `https:` URL). Without them the UI hides the
   push option. Recommend turning it on.
 - **Checking new passwords against known leaks** (Have I Been Pwned range API) —
-  `SKEIN_PWNED_PASSWORDS_ENABLED=true`. Off by default because it calls a third
-  party on each password change; ask whether the server may do that.
+  on by default (`SKEIN_PWNED_PASSWORDS_ENABLED`) for the passwords users set
+  themselves (signup, invitation, reset, password change; not those an admin
+  sets); only the first five hex characters of the password's SHA-1 leave the
+  server, and an unreachable service is skipped without blocking. Ask whether
+  the server may call that third party. If not, set
+  `SKEIN_PWNED_PASSWORDS_ENABLED=false` — no lookup at all, neither from the
+  server nor from the browser — or point `SKEIN_PWNED_PASSWORDS_BASE_URL` at a
+  mirror of the corpus (the variable is passed to skein-api by the production
+  compose file; set it in `.env`). With a mirror the password page's browser
+  hint is switched off too, so nothing reaches the public service.
 - **Instance name in monitoring** — `SKEIN_INSTANCE_NAME` (default `skein`),
   useful if several installations report to one Prometheus/Loki.
 
@@ -1143,10 +1157,15 @@ Tell the person, in one short message:
      Every session issued before the update ends and each person signs in once
      more; other data is kept. If you roll back to the former version, people
      sign in again: the former version accepts no session issued before the
-     update or while the new version ran. Before rolling forward again, delete
-     the key `skein:session-format` in Redis. Once the new version is running
-     again, a session it issued earlier that survived the rollback is valid
-     again, because the new version issued it;
+     update or while the new version ran. Deleting the key
+     `skein:session-format` in Redis is a required step of the rollback: do it
+     before rolling forward again. Rolling forward again ends every session,
+     including those the new version issued before the rollback: before it
+     serves requests, the new version ends every session stored in Redis when
+     it starts, and each person signs in once more; other data is kept. The new
+     version also recognises the rollback by the sessions the former version
+     left, but not when it left none, which is why the step is required. An
+     ordinary restart ends no session;
    - the release that introduces the service-call marker has a rule of its own:
      [DEPLOYMENT-NOTES.md](DEPLOYMENT-NOTES.md) section 4.7;
    - after the upgrade, read the startup log of skein-web. A warning that

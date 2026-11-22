@@ -74,6 +74,67 @@ jobs:
             COMPOSE_PROFILES="$profile" docker compose -f docker-compose.production.yml config -q
           done
 
+      # The two optional session settings of skein-web reach the container only
+      # when the operator sets them. Unset, the rendered key must be absent or
+      # null: an empty string would reach skein-web and stop it at start. Set,
+      # the value must arrive unchanged. Checked on the rendered model, with
+      # only the env files below as input (no .env of the checkout, no runner
+      # variables of the same names).
+      - name: Session settings reach skein-web unchanged or not at all
+        shell: bash
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          keys="SKEIN_SESSION_IDLE_TIMEOUT_HOURS SKEIN_SESSION_ABSOLUTE_TIMEOUT_HOURS"
+          declare -A value=([SKEIN_SESSION_IDLE_TIMEOUT_HOURS]=36 [SKEIN_SESSION_ABSOLUTE_TIMEOUT_HOURS]=1440)
+
+          printf '%s\n' POSTGRES_PASSWORD=ci-placeholder \
+            SKEIN_AGENT_PUBLIC_URL=https://skein.example.com \
+            SKEIN_INTERNAL_SECRET=ci-placeholder-not-a-secret-value \
+            SKEIN_VERSION=0.0.0 > "$tmp/unset.env"
+          cp "$tmp/unset.env" "$tmp/set.env"
+          for key in $keys; do echo "$key=${value[$key]}" >> "$tmp/set.env"; done
+
+          # Prints the environment of skein-web as JSON.
+          render() (
+            # shellcheck disable=SC2086 # $keys is a list of names
+            unset $keys COMPOSE_PROFILES
+            docker compose --env-file "$1" -f docker-compose.production.yml config --format json \
+              | jq -c '.services["skein-web"].environment'
+          )
+          unset_env="$(render "$tmp/unset.env")"
+          set_env="$(render "$tmp/set.env")"
+
+          executed=0
+          failed=0
+          for key in $keys; do
+            executed=$((executed + 1))
+            if jq -e --arg k "$key" '.[$k] == null' <<<"$unset_env" > /dev/null; then
+              echo "PASS: $key, operator variable unset: absent or null"
+            else
+              echo "FAIL: $key, operator variable unset: rendered as $(jq -c --arg k "$key" '.[$k]' <<<"$unset_env")"
+              failed=$((failed + 1))
+            fi
+            executed=$((executed + 1))
+            if jq -e --arg k "$key" --arg v "${value[$key]}" '.[$k] == $v' <<<"$set_env" > /dev/null; then
+              echo "PASS: $key, operator variable set to ${value[$key]}: passed unchanged"
+            else
+              echo "FAIL: $key, operator variable set to ${value[$key]}: rendered as $(jq -c --arg k "$key" '.[$k]' <<<"$set_env")"
+              failed=$((failed + 1))
+            fi
+          done
+
+          echo "Result: executed $executed / failed $failed"
+          if [ "$executed" -eq 0 ]; then
+            echo "::error::No assertion was executed."
+            exit 1
+          fi
+          if [ "$failed" -ne 0 ]; then
+            echo "::error::$failed of $executed session setting assertions failed."
+            exit 1
+          fi
+
   shell:
     name: Shell scripts
     runs-on: ubuntu-24.04
