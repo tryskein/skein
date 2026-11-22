@@ -15,16 +15,6 @@ name: Release Skein
 on:
   workflow_dispatch:
     inputs:
-      bump_override:
-        description: >-
-          "major" forces a major bump. Allowed only when no service changed
-          and this repository alone changed in a breaking way (for example the
-          format of .env).
-        type: choice
-        options:
-          - none
-          - major
-        default: none
       first_version:
         description: >-
           Version of the very first Skein release (X.Y.Z). Used only when this
@@ -60,7 +50,6 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-      BUMP_OVERRIDE: ${{ inputs.bump_override }}
       FIRST_VERSION: ${{ inputs.first_version }}
       DRY_RUN: ${{ inputs.dry_run }}
       GHCR_RELEASE_TOKEN: ${{ secrets.GHCR_RELEASE_TOKEN }}
@@ -150,17 +139,14 @@ jobs:
             if [ "$LEVEL" = none ]; then
               # No service changed. A change to this repository alone is a patch.
               # Workflow files, the changelog and the pin file are not changes for
-              # people who run Skein.
+              # people who run Skein. A major Skein release always comes from the
+              # services (RELEASING.md, "One major version for the whole product").
               if git diff --quiet "$PREV_TAG" HEAD -- . ':(exclude).github' ':(exclude)CHANGELOG.md' ':(exclude)versions.env'; then
                 echo "::error::Nothing changed since Skein ${PREV_TAG}: the latest service releases are the same and this repository has no changes besides workflows, the changelog and versions.env. No release made."
                 exit 1
               fi
               LEVEL="patch"
-              if [ "$BUMP_OVERRIDE" = major ]; then LEVEL="major"; fi
               echo "Only this repository changed since ${PREV_TAG}: ${LEVEL} release."
-            elif [ "$BUMP_OVERRIDE" != none ]; then
-              echo "::error::bump_override applies only when no service changed. Services changed, so the bump is computed from them."
-              exit 1
             fi
 
             IFS=. read -r MA MI PA <<< "$PREV_TAG"
@@ -169,6 +155,21 @@ jobs:
               minor) VERSION="${MA}.$((MI + 1)).0" ;;
               *)     VERSION="${MA}.${MI}.$((PA + 1))" ;;
             esac
+          fi
+
+          # One major version for the whole product: every service of Skein N.x
+          # is N.x (RELEASING.md). Checked before anything is published.
+          SKEIN_MAJOR="${VERSION%%.*}"
+          behind=""
+          for pair in skein-api:API skein-web:WEB skein-frontend:FRONTEND; do
+            svc="${pair%%:*}"; new_var="NEW_${pair##*:}"
+            if [ "${!new_var%%.*}" != "$SKEIN_MAJOR" ]; then
+              behind="${behind} ${svc} ${!new_var};"
+            fi
+          done
+          if [ -n "$behind" ]; then
+            echo "::error::Skein ${VERSION} needs every service at major version ${SKEIN_MAJOR}, but:${behind} release ${SKEIN_MAJOR}.0.0 of these services first (RELEASING.md, \"One major version for the whole product\")."
+            exit 1
           fi
 
           if git rev-parse -q --verify "refs/tags/${VERSION}" > /dev/null; then

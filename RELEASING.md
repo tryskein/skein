@@ -26,10 +26,40 @@ Both follow [Semantic Versioning](https://semver.org): `MAJOR.MINOR.PATCH`.
 - A change that breaks compatibility between services is released in all the
   services it touches at the same time.
 
+## One major version for the whole product
+
+**Every service of Skein `N.x` has major version `N`.** Skein 2.x is made of
+skein-api 2.x, skein-web 2.x and skein-frontend 2.x; minor and patch versions
+of the services stay their own. The major version names a generation of the
+product: a 1.x service and a 2.x service never belong to the same Skein
+release.
+
+The same major does not mean that any two 2.x versions work together. The
+tested set is the one a Skein release pins: the `skein-X.Y.Z` image tags or
+its `versions.env`. Ask for `SKEIN_VERSION` in a bug report.
+
+How it works:
+
+- Whether a release is a major one is decided before the release candidates.
+  In a major release every service is released as `N.0.0`, through the usual
+  candidate (`N.0.0-rc.N`) and build.
+- A service without changes in a major release is released as `N.0.0` all the
+  same: a new build of the same code, never a re-tag of the old image (the
+  version is built into the image). Its changelog entry says
+  `No product code changes; major version aligned with Skein N.0.0.`; for
+  skein-api it adds `REST API and MCP tools unchanged.`
+- A change that breaks something for people who run Skein and lives in this
+  repository alone (for example the format of `.env`) is made compatible, or
+  waits for the next major release, or is shipped with a major release of all
+  three services.
+- A service `MAJOR` may therefore grow without a breaking change in that
+  service. Its changelog says so explicitly.
+
 ## Service version
 
-A service gets a new version only when its own code changes. A service that
-did not change is not rebuilt and gets no new tag.
+A service gets a new version when its own code changes, and in every major
+Skein release (see above). Otherwise a service that did not change is not
+rebuilt and gets no new tag.
 
 | Bump | When |
 |---|---|
@@ -50,10 +80,10 @@ Its version bump follows the largest change among the services it includes:
 - otherwise → `PATCH`.
 
 A change to this repository alone (docs, compose files, Kubernetes examples)
-is a `PATCH`, unless it breaks something for people who run Skein — for
-example a change to the format of `.env` — which makes it a `MAJOR`. Changes
-to the workflows in `.github/`, to `CHANGELOG.md` and to `versions.env` do not
-count as changes for this purpose.
+is a `PATCH`; a breaking one follows
+[One major version for the whole product](#one-major-version-for-the-whole-product).
+Changes to the workflows in `.github/`, to `CHANGELOG.md` and to `versions.env`
+do not count as changes for this purpose.
 
 `versions.env` in the root of this repository lists the service versions of
 the latest Skein release (`SKEIN_VERSION`, `SKEIN_API_VERSION`,
@@ -99,8 +129,9 @@ Images: `ghcr.io/tryskein/skein-api`, `ghcr.io/tryskein/skein-web`,
 | `skein-X.Y.Z` | the image of this service included in Skein release `X.Y.Z` | never |
 | `latest` | the newest version of the service | yes, on every release |
 
-An image that did not change in a Skein release is not rebuilt: the
-`skein-X.Y.Z` tag is added to its existing image.
+An image that did not change in a minor or patch Skein release is not
+rebuilt: the `skein-X.Y.Z` tag is added to its existing image. In a major
+release every service has a new `N.0.0` image.
 
 **To run a tested set, pin `skein-X.Y.Z` on all three images** — or read
 `versions.env` of that Skein release, which pins the exact service versions. `latest` is
@@ -127,9 +158,6 @@ gh workflow run release.yml --repo tryskein/skein
 
 # Very first Skein release only: this repository has no release tag yet
 gh workflow run release.yml --repo tryskein/skein -f first_version=1.0.0
-
-# Only this repository changed, and it breaks something for people who run Skein
-gh workflow run release.yml --repo tryskein/skein -f bump_override=major
 ```
 
 Then follow the run. The run waits for a maintainer to approve the `release`
@@ -156,7 +184,7 @@ docker buildx imagetools inspect ghcr.io/tryskein/skein-api:skein-<X.Y.Z>
 | Not started from the default branch | stops |
 | No service has a new release and this repository has no changes since the previous Skein release | stops with "Nothing changed": no release |
 | A service has no final `X.Y.Z` release, or its image is missing or lacks `amd64` or `arm64` | stops before anything is published |
-| `bump_override=major` while a service changed | stops: the bump is computed from the services |
+| The major version of a service differs from the major version of the new Skein release (for example Skein 2.0.0 with skein-web 1.0.1) | stops before anything is published and names the services to release as `N.0.0` first |
 | The tag `X.Y.Z` or a GitHub Release of that name already exists | stops: tags are never moved or reused |
 | A `skein-X.Y.Z` image tag already exists on a different image | stops: tags are never moved |
 | The secret `GHCR_RELEASE_TOKEN` is not set | stops before anything is published (a dry run only warns) |
