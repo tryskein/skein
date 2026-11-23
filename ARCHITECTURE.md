@@ -194,6 +194,11 @@ served by the instance at `/api/v1/openapi.json`.
 3. Subjects:
      skein.events.project.{projectId}.{entity}.{action}.{entityId}   project-scoped
      skein.user.{userId}.{action}                                     user-scoped
+   {entityId} is always one non-empty token: bytes A-Z, a-z, 0-9, "_", ":"
+   and "-" stand for themselves, every other byte ("." and "%" included) is
+   "%" plus two upper-case hex digits, and an empty id is "%". An id whose
+   encoding would exceed 1024 bytes is sent as "%%" plus the upper-case hex
+   SHA-256 of the id. The envelope always carries the original id.
 4. Every skein-web replica subscribes to skein.events.> and skein.user.> in one
    queue group (each message is handled once), decides the audience, and
    pushes into SignalR project groups or to the specific user. The Redis
