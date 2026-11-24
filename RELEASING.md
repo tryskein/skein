@@ -65,7 +65,7 @@ rebuilt and gets no new tag.
 |---|---|
 | `PATCH` | a fix; external behaviour does not change |
 | `MINOR` | something new; everything that worked keeps working |
-| `MAJOR` | an external contract breaks: the REST API or MCP tools of skein-api, an environment variable, a database migration that cannot be rolled back |
+| `MAJOR` | an external contract breaks: the public REST API (`/api/v1`) or the MCP tools of skein-api, an environment variable, a database migration that cannot be rolled back. The internal API between the services (`/ui/v1`, used only by skein-web and skein-frontend of the same release) is not an external contract; stricter input validation is a `MINOR` change described in the upgrade notes |
 
 ## Skein release version
 
