@@ -338,11 +338,12 @@ enough: in the same apply, set `spec.strategy.type: Recreate` in your
 that release). Everyone signs in once more. A rollback is rolled out with a stop
 too: the manifest of the earlier release brings back RollingUpdate, so in the
 apply that returns the earlier tags keep `spec.strategy.type: Recreate` and no
-`rollingUpdate` block. If you roll back, people sign in again. Deleting the
-Redis key `skein:session-format` is a required step of the rollback: do it
-before rolling forward again. Rolling forward again is rolled out with a stop
-as well and ends every session, including those the new version issued before
-the rollback, so everyone signs in once more. After that release is running,
+`rollingUpdate` block. If you roll back, people sign in again. Rolling forward
+again is rolled out with a stop as well. While skein-web is scaled to zero,
+before the new version starts, delete the session keys `skein:session:*` in
+Redis (the command is under `REDIS_URL` in the
+[skein-web reference](https://github.com/tryskein/skein-web/blob/main/docs/env-reference.md)): otherwise the sessions the new version issued before the rollback
+are valid again. Everyone signs in once more. After that release is running,
 put your copy back to RollingUpdate in a separate change, whether or not a
 GitOps controller manages it. A release whose notes demand stopping skein-api and
 skein-web first is a stop-all: scale both and skein-frontend to zero, wait until
@@ -1157,14 +1158,12 @@ Tell the person, in one short message:
      Every session issued before the update ends and each person signs in once
      more; other data is kept. If you roll back to the former version, people
      sign in again: the former version accepts no session issued before the
-     update or while the new version ran. Deleting the key
-     `skein:session-format` in Redis is a required step of the rollback: do it
-     before rolling forward again. Rolling forward again ends every session,
-     including those the new version issued before the rollback: before it
-     serves requests, the new version ends every session stored in Redis when
-     it starts, and each person signs in once more; other data is kept. The new
-     version also recognises the rollback by the sessions the former version
-     left, but not when it left none, which is why the step is required. An
+     update or while the new version ran. Before rolling forward again, with
+     skein-web stopped, delete the session keys `skein:session:*` in Redis (the
+     command is under `REDIS_URL` in the
+     [skein-web reference](https://github.com/tryskein/skein-web/blob/main/docs/env-reference.md)):
+     otherwise the sessions the new version issued before the rollback are
+     valid again. Each person signs in once more; other data is kept. An
      ordinary restart ends no session;
    - the release that introduces the service-call marker has a rule of its own:
      [DEPLOYMENT-NOTES.md](DEPLOYMENT-NOTES.md) section 4.7;

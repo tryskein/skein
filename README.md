@@ -205,10 +205,10 @@ together, and everyone signs in once more. On Kubernetes its `skein-web.yaml`
 uses `strategy: Recreate`; if you keep your own copy of the manifests, set that
 in the same apply as the new image tags, and return to RollingUpdate in a
 separate change after that release. A rollback from that release and rolling
-forward again after it are rolled out with a stop as well. Deleting the Redis
-key `skein:session-format` is a required step of a rollback, done before
-rolling forward again; rolling forward again after a rollback ends every
-session, and everyone signs in once more. Details in [INSTALL.md](INSTALL.md).
+forward again after it are rolled out with a stop as well. Before rolling
+forward again, delete the session keys `skein:session:*` in Redis, so the
+sessions issued before the rollback do not come back; everyone signs in once
+more. Details in [INSTALL.md](INSTALL.md).
 
 Database migrations run automatically when skein-api starts. Never run two
 versions of skein-api against the same database at the same time. Rolling the
