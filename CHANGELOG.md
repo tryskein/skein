@@ -7,6 +7,7 @@ flat, dated log across all of them. Newest first.
 
 ## Recent Changes
 
+- 2026-11-25 [Skein 2.2.0 · skein-api v2.2.0 · skein-web v2.1.1 · skein-frontend v2.2.0] [RELEASE] Skein 2.2.0. Service releases: [skein-api 2.2.0](https://github.com/tryskein/skein-api/releases/tag/2.2.0), [skein-web 2.1.1](https://github.com/tryskein/skein-web/releases/tag/2.1.1), [skein-frontend 2.2.0](https://github.com/tryskein/skein-frontend/releases/tag/2.2.0).
 - 2026-11-24 [Skein 2.1.0 · skein-api v2.1.0 · skein-web v2.1.0 · skein-frontend v2.1.0] [RELEASE] Skein 2.1.0. Service releases: [skein-api 2.1.0](https://github.com/tryskein/skein-api/releases/tag/2.1.0), [skein-web 2.1.0](https://github.com/tryskein/skein-web/releases/tag/2.1.0), [skein-frontend 2.1.0](https://github.com/tryskein/skein-frontend/releases/tag/2.1.0).
 - 2026-11-22 [Skein 2.0.0 · skein-api v2.0.0 · skein-web v2.0.0 · skein-frontend v2.0.0] [RELEASE] Skein 2.0.0. Service releases: [skein-api 2.0.0](https://github.com/tryskein/skein-api/releases/tag/2.0.0), [skein-web 2.0.0](https://github.com/tryskein/skein-web/releases/tag/2.0.0), [skein-frontend 2.0.0](https://github.com/tryskein/skein-frontend/releases/tag/2.0.0).
 - 2026-11-09 [Skein 1.1.0 · skein-api v1.1.0 · skein-web v1.0.1 · skein-frontend v1.1.0] [RELEASE] Skein 1.1.0. Service releases: [skein-api 1.1.0](https://github.com/tryskein/skein-api/releases/tag/1.1.0), [skein-web 1.0.1](https://github.com/tryskein/skein-web/releases/tag/1.0.1), [skein-frontend 1.1.0](https://github.com/tryskein/skein-frontend/releases/tag/1.1.0).
